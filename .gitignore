@@ -1,0 +1,33 @@
+# Images and video (slide media, renders, screenshots, full-size GIF originals)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.heic
+*.svg
+*.mp4
+*.mov
+*.webm
+full-size-gifs/
+full-size originals/
+
+# Browser session state (contains Google sign-in cookies — never commit)
+.gstack/
+
+# Deck extracts and working folders
+*-extract.zip
+work/
+build/
+ref/
+media/
+
+# OS / tooling clutter
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
