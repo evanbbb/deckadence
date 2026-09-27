@@ -11,10 +11,12 @@
 
 **Figma**
 - Load the `figma-use` skill before the first `use_figma` call.
-- `upload_assets` rejects files over **10 MB** ("Asset too large (max 10MB)"), although Figma itself accepts 50 MB drag-and-drop. `prepare_deck.py` saves the untouched originals where the user asked. Then it either makes copies under the limit (GIFs keep every frame and the frame rate; fewer colours first, then smaller; big PNGs become high-quality JPEGs) or marks them `manual`, so the build leaves a "DRAG IN" drop-zone.
+- **Uploaded GIFs don't play.** A GIF sent through `upload_assets` keeps all its frames, but Figma shows only the first one, in the canvas, Dev Mode and Present. The upload tool also refuses video ("Unsupported content type: video/mp4"), and the Plugin API can't create video or fetch URLs. Only a GIF dragged in by hand plays. Once it's in the file, any fill that uses its image hash plays too, even after the dropped layer is deleted. The hash is the SHA-1 of the file. Hence the one-drag-per-deck flow: `prepare_deck.py` → `GIF:` slots → the user drags the folder in → `place_gifs.js`.
+- Hand-dropped GIFs lose their file name (Figma calls them " 1", " 2" …). Match them by image hash, never by layer name.
+- `upload_assets` rejects files over **10 MB** ("Asset too large (max 10MB)"), although Figma itself accepts 50 MB drag-and-drop. `prepare_deck.py` saves the untouched originals where the user asked. Then it either makes copies under the limit (big PNGs become high-quality JPEGs) or marks them `manual`, so the build leaves a "DRAG IN" drop-zone. GIFs don't need this: only a small still is uploaded.
 - Don't assume the user can install software. Try `python3 -m pip install --user imageio-ffmpeg` before anything needing admin, and fall back to drop-zones rather than getting stuck.
 - Upload URLs are single-use and expire in about 10 minutes: request them, then post straight away.
-- GIF fills render **blank** in `get_screenshot` and `node.screenshot()`. That's normal. Verify with `getImageByHash(hash).getBytesAsync()`, which should start with `GIF89a`.
+- GIF fills render **blank** in `get_screenshot` and `node.screenshot()`. Checking that the bytes start with `GIF89a` proves nothing: a still-only uploaded GIF has the same bytes. Only the user can see whether it plays.
 - Look styles up **by name** at runtime. Hard-coded style IDs can fail with "Cannot find style".
 - Line nodes put arrowheads on both ends. Use the `arrow()` helper (a vector with a cap on one end only).
 - Use `insertCharacters` then `deleteCharacters` (as `fix_text.js` does) to change text. Setting `.characters` wipes coloured ranges and links.

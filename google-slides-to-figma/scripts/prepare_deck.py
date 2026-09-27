@@ -3,15 +3,19 @@
 
 Usage:
   python3 prepare_deck.py <extract.zip | extracted-folder> <work-dir>
-          [--originals <folder>] [--oversize shrink|placeholder] [--limit-mb 10]
+          [--originals <folder>] [--gifs <folder>] [--drag-limit-mb 50] [--oversize shrink|placeholder] [--limit-mb 10]
 
 Does:
   1. unzips into <work-dir> (manifest.json, deck.json, ref/, media/)
   2. crops images whose visible area on the slide is smaller than the image  -> media/sNN_K_crop.<ext>
-  3. every file over --limit-mb (the Figma MCP upload limit, 10 MB):
+  2b. GIFs: Figma only plays a GIF that a person dragged in by hand. Files uploaded by the MCP tool show only the first
+      frame, whatever their bytes. So every GIF is copied to --gifs (default: the --originals folder) for the person to
+      drag onto the Figma page in one go, and its SHA-1 (= Figma's image hash) is recorded in gifs.json. The build uploads
+      a still first frame as a stand-in, and scripts/place_gifs.js later swaps in the playing GIF by hash.
+      GIFs over --drag-limit-mb (50) get a shrunk copy (every frame and the frame rate kept) instead.
+  3. every other file over --limit-mb (the Figma MCP upload limit, 10 MB):
        - the untouched original is copied to --originals (default <work-dir>/full-size originals)
-       - --oversize shrink (default): GIFs -> animated copy under the limit (every frame + frame rate kept; fewer colours
-         first, then smaller), PNG/JPG -> high-quality JPEG at the same size. Falls back to placeholder if it can't.
+       - --oversize shrink (default): PNG/JPG -> high-quality JPEG at the same size. Falls back to placeholder if it can't.
        - --oversize placeholder: nothing uploaded; the image is marked "manual" so the build leaves a labelled
          drop-zone saying which file to drag in by hand (Figma accepts up to 50 MB when dragged in)
   4. looks up YouTube titles, writes contact sheets ref/sheet-1.png, sheet-2.png … (6x5 slides each)
@@ -21,9 +25,9 @@ ffmpeg is found in this order, none needing admin rights:
   a) `ffmpeg` on the PATH (e.g. Homebrew)
   b) the copy bundled with the Python package imageio-ffmpeg — install for this user only with:
        python3 -m pip install --user imageio-ffmpeg
-Without ffmpeg: crops and contact sheets still work if Pillow is installed; oversize files become placeholders.
+Without ffmpeg: crops, GIF stills and contact sheets still work if Pillow is installed; oversize files become placeholders.
 """
-import json, os, shutil, subprocess, sys, urllib.request, zipfile
+import hashlib, json, os, shutil, subprocess, sys, urllib.request, zipfile
 
 def find_ffmpeg():
     exe = shutil.which('ffmpeg')
@@ -54,6 +58,9 @@ def main():
     originals = opt('--originals') or opt('--gif-archive') or os.path.join(work, 'full-size originals')
     mode = opt('--oversize', 'shrink')
     limit_b = int(float(opt('--limit-mb', 10)) * 1_000_000) - 150_000  # small safety margin
+    gifs_dir = opt('--gifs') or originals
+    drag_limit_b = int(float(opt('--drag-limit-mb', 50)) * 1_000_000) - 500_000
+    gif_hashes = {}  # sha1 -> file name in gifs_dir (one copy per distinct GIF)
     os.makedirs(work, exist_ok=True)
     if src.endswith('.zip'):
         with zipfile.ZipFile(src) as z:
@@ -64,7 +71,7 @@ def main():
     manifest = json.load(open(os.path.join(work, 'manifest.json')))
     deck = json.load(open(os.path.join(work, 'deck.json')))
     report = {'title': deck.get('title'), 'slides': len(manifest), 'images': 0, 'ffmpeg': FFMPEG_SOURCE or 'not found',
-              'gifs': [], 'crops': [], 'oversize': [], 'manual_uploads': [], 'youtube': deck.get('youtube', []),
+              'gifs': [], 'gifs_folder': None, 'crops': [], 'oversize': [], 'manual_uploads': [], 'youtube': deck.get('youtube', []),
               'warnings': deck.get('warnings', [])}
     try:
         from PIL import Image  # noqa
@@ -83,7 +90,9 @@ def main():
             i['upload'] = f  # the file to upload (may be replaced below)
             i['manual'] = False
             if i['type'] == 'image/gif':
-                report['gifs'].append({'slide': s['n'], 'file': f, 'bytes': os.path.getsize(path)})
+                report['gifs'].append(prepare_gif(work, s['n'], i, path, gifs_dir, deck_name, gif_hashes, drag_limit_b))
+                report['gifs_folder'] = gifs_dir
+                continue  # the stand-in still is tiny: no cropping or oversize handling needed
             # 2. crop to the visible area (not GIFs: cropping would re-encode every frame)
             full, vis = i['full'], i['vis']
             if full != vis and i['natW'] and i['type'] in ('image/png', 'image/jpeg', 'image/webp'):
@@ -110,16 +119,13 @@ def main():
                 root = os.path.splitext(i['upload'])[0]
                 small = None
                 if mode == 'shrink':
-                    if i['type'] == 'image/gif':
-                        small = shrink_gif(path, os.path.join(work, root + '_small.gif'), limit_b)
-                    else:
-                        out = os.path.join(work, root + '_small.jpg')
-                        if pil:
-                            from PIL import Image
-                            Image.open(path).convert('RGB').save(out, quality=92)
-                        elif FFMPEG:
-                            ff('-i', path, '-q:v', '2', out)
-                        small = out if os.path.exists(out) and os.path.getsize(out) <= limit_b else None
+                    out = os.path.join(work, root + '_small.jpg')
+                    if pil:
+                        from PIL import Image
+                        Image.open(path).convert('RGB').save(out, quality=92)
+                    elif FFMPEG:
+                        ff('-i', path, '-q:v', '2', out)
+                    small = out if os.path.exists(out) and os.path.getsize(out) <= limit_b else None
                 if small:
                     i['upload'] = os.path.relpath(small, work); entry['uploaded_as'] = i['upload']; entry['small_bytes'] = os.path.getsize(small)
                 else:
@@ -166,8 +172,47 @@ def main():
             fh.write(f"{s['n']}: {t}\n")
             if s.get('notes'): fh.write(f"   notes: {s['notes']}\n")
     json.dump(manifest, open(os.path.join(work, 'manifest.json'), 'w'), indent=1)
+    json.dump({name: h for h, name in gif_hashes.items()}, open(os.path.join(work, 'gifs.json'), 'w'), indent=1)
     json.dump(report, open(os.path.join(work, 'report.json'), 'w'), indent=1)
     print(json.dumps({k: (v if k not in ('crops',) else len(v)) for k, v in report.items()}, indent=1))
+
+def sha1(path):
+    h = hashlib.sha1()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+def prepare_gif(work, n, i, path, gifs_dir, deck_name, gif_hashes, drag_limit_b):
+    """Copy a GIF to the drag-in folder, record its hash, and make a still first frame to upload as a stand-in."""
+    entry = {'slide': n, 'file': i['file'], 'bytes': os.path.getsize(path)}
+    root = os.path.splitext(i['file'])[0]
+    drag_src = path
+    if entry['bytes'] > drag_limit_b:
+        small = shrink_gif(path, os.path.join(work, root + '_drag.gif'), drag_limit_b)
+        if small:
+            drag_src = small; entry['shrunk_to'] = os.path.getsize(small)
+        else:
+            entry['warning'] = 'over the drag-in limit and could not be shrunk' + ('' if FFMPEG else ' (no ffmpeg)')
+    h = sha1(drag_src)
+    if h not in gif_hashes:  # the same GIF on several slides is dragged in once
+        os.makedirs(gifs_dir, exist_ok=True)
+        name = f"{deck_name} - slide {n:02d}{'' if i['k'] == 0 else ' (' + str(i['k'] + 1) + ')'}.gif"
+        shutil.copy2(drag_src, os.path.join(gifs_dir, name))
+        gif_hashes[h] = name
+    i['gif'] = {'drag': gif_hashes[h], 'sha1': h}
+    entry['drag_in'] = gif_hashes[h]
+    # stand-in: first frame as PNG (grey box if neither Pillow nor ffmpeg is available)
+    still = os.path.join(work, root + '_still.png')
+    try:
+        from PIL import Image
+        Image.open(path).convert('RGBA').save(still)
+    except Exception:
+        if FFMPEG: ff('-i', path, '-frames:v', '1', still)
+    i['upload'] = os.path.relpath(still, work) if os.path.exists(still) else None
+    i['manual'] = False
+    entry['still'] = i['upload']
+    return entry
 
 def shrink_gif(src, dst, limit_b):
     """Re-encode an animated GIF under limit_b bytes. Keeps every frame and the frame rate; lowers colours first, then width."""

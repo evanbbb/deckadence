@@ -50,8 +50,8 @@ It can read a deck's text and list a folder (useful for finding decks by name), 
 ## Local tools
 
 - `python3`: normally present on a Mac. Check with `python3 --version`.
-- `ffmpeg`: shrinks GIFs over the 10 MB upload limit and makes contact sheets. **Most people can get it without admin rights:**
+- `ffmpeg`: makes GIF stand-in stills, shrinks images over the 10 MB upload limit and makes contact sheets. **Most people can get it without admin rights:**
   1. Already installed? `ffmpeg -version` (for example from Homebrew). Use it.
   2. Otherwise: `python3 -m pip install --user imageio-ffmpeg`. This downloads a complete, private ffmpeg into the user's own Python folder, with no admin password and no system changes. `prepare_deck.py` finds it automatically; its summary says `"ffmpeg": "imageio-ffmpeg"`.
   3. If that's blocked too (a locked-down work laptop, no access to PyPI): skip ffmpeg. Everything still works except shrinking. Files over 10 MB get a dashed "Drag in by hand" box in Figma, and the originals are saved in a folder for the user to drag in (Figma accepts up to 50 MB by hand).
-- On a Mac, the very first `python3` may offer to install Apple's Command Line Tools, which can need an admin password. If they can't, skip `prepare_deck.py`: unzip the extract yourself and build from `manifest.json` (no crops; anything over 10 MB becomes a drop-zone).
+- On a Mac, the very first `python3` may offer to install Apple's Command Line Tools, which can need an admin password. If they can't, skip `prepare_deck.py`: unzip the extract yourself and build from `manifest.json` (no crops; anything over 10 MB becomes a drop-zone). For GIFs, copy them to a folder yourself, get each hash with `shasum -a 1 <file>` (built into macOS), and write `gifs.json` by hand so `place_gifs.js` still works.

@@ -27,7 +27,7 @@ def parse_slides(spec, n):
 def slim(s):
     return {
         'n': s['n'], 'background': s.get('background'),
-        'images': [{'upload': i.get('upload'), 'file': i.get('file'), 'manual': i.get('manual', False), 'manual_file': i.get('manual_file'), 'vis': i['vis']}
+        'images': [{'upload': i.get('upload'), 'file': i.get('file'), 'manual': i.get('manual', False), 'manual_file': i.get('manual_file'), 'gif': i.get('gif'), 'vis': i['vis']}
                    for i in s['images'] if i.get('file')],
         'texts': [{'text': t['text'], 'rect': t['rect'], 'font': t['font'], 'size': t['size'], 'weight': t['weight'], 'italic': t['italic'], 'color': t['color'],
                    'paragraphs': [{'text': p['text'], 'runs': p['runs'][:1]} for p in t.get('paragraphs', [])]} for t in s['texts']],

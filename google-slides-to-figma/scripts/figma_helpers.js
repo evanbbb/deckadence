@@ -81,8 +81,16 @@ async function dropZone(p, fileName, x, y, w, h) {
   t.layoutSizingHorizontal = 'FILL'; t.textAutoResize = 'HEIGHT';
   return z;
 }
-// Place a manifest image: a normal placeholder (uploaded later) or, if marked manual, a drop-zone.
-async function media(p, im, x, y, w, h) { return im.manual ? dropZone(p, im.manual_file || im.file, x, y, w, h) : img(p, im.upload || im.file, x, y, w, h); }
+// GIF slot: shows a still first frame for now (uploaded like any image). Named "GIF: <file to drag in>" so that
+// place_gifs.js can swap in the playing GIF after the person drags the GIF folder onto the page.
+// (Figma only plays GIFs that were dragged in by hand; MCP uploads stay on the first frame.)
+function gifSlot(p, im, x, y, w, h) {
+  const r = figma.createRectangle(); p.appendChild(r); r.name = 'GIF: ' + im.gif.drag;
+  r.x = Math.round(x); r.y = Math.round(y); r.resize(Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
+  r.fills = [{ type: 'SOLID', color: { r: .93, g: .93, b: .93 } }]; if (im.upload) imgs.push([r.id, im.upload]); return r;
+}
+// Place a manifest image: a GIF slot, a normal placeholder (uploaded later) or, if marked manual, a drop-zone.
+async function media(p, im, x, y, w, h) { return im.gif ? gifSlot(p, im, x, y, w, h) : im.manual ? dropZone(p, im.manual_file || im.file, x, y, w, h) : img(p, im.upload || im.file, x, y, w, h); }
 // Same, fitted into a box keeping the aspect ratio (uses the visible size on the slide as the ratio).
 async function mediaFit(p, im, bx, by, bw, bh) { const nw = im.vis ? im.vis.w : im.natW, nh = im.vis ? im.vis.h : im.natH; const s = Math.min(bw / nw, bh / nh); return media(p, im, bx + (bw - nw * s) / 2, by + (bh - nh * s) / 2, nw * s, nh * s); }
 
