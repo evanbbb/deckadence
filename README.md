@@ -1,4 +1,4 @@
-# Presentation converters
+# Deckadence
 
 Skills for AI coding tools (Claude Code, Codex and others) that move slide decks between tools. Each one is a separate skill, so you can install only the one you need:
 
@@ -18,9 +18,9 @@ The skills work with AI coding tools that run on your Mac, such as **Claude Code
 
 | Skill | Download |
 |---|---|
-| Google Slides → Figma | [google-slides-to-figma.zip](https://github.com/evanbbb/presentation-converters/raw/main/skills/google-slides-to-figma.zip) |
-| Google Slides → Keynote | [google-slides-to-keynote.zip](https://github.com/evanbbb/presentation-converters/raw/main/skills/google-slides-to-keynote.zip) |
-| Figma → Keynote | [figma-to-keynote.zip](https://github.com/evanbbb/presentation-converters/raw/main/skills/figma-to-keynote.zip) |
+| Google Slides → Figma | [google-slides-to-figma.zip](https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-figma.zip) |
+| Google Slides → Keynote | [google-slides-to-keynote.zip](https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-keynote.zip) |
+| Figma → Keynote | [figma-to-keynote.zip](https://github.com/evanbbb/deckadence/raw/main/skills/figma-to-keynote.zip) |
 
 (All of them are in the [`skills`](skills) folder.)
 
@@ -28,8 +28,8 @@ The skills work with AI coding tools that run on your Mac, such as **Claude Code
 
 | AI tool | Skills folder | Paste this in Terminal (swap in the skill you want) |
 |---|---|---|
-| Claude Code | `~/.claude/skills` | `curl -sL https://github.com/evanbbb/presentation-converters/raw/main/skills/google-slides-to-keynote.zip -o /tmp/skill.zip && unzip -oq /tmp/skill.zip -d ~/.claude/skills` |
-| Codex | `~/.agents/skills` | `curl -sL https://github.com/evanbbb/presentation-converters/raw/main/skills/google-slides-to-keynote.zip -o /tmp/skill.zip && unzip -oq /tmp/skill.zip -d ~/.agents/skills` |
+| Claude Code | `~/.claude/skills` | `curl -sL https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-keynote.zip -o /tmp/skill.zip && unzip -oq /tmp/skill.zip -d ~/.claude/skills` |
+| Codex | `~/.agents/skills` | `curl -sL https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-keynote.zip -o /tmp/skill.zip && unzip -oq /tmp/skill.zip -d ~/.agents/skills` |
 
 Then restart the AI tool. To use a skill in just one project instead, unzip it into that project's `.claude/skills` (Claude Code) or `.agents/skills` (Codex) folder.
 
