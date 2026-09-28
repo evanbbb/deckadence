@@ -36,3 +36,6 @@ venv/
 *.pptx.fixups.json
 *-check/
 *.key
+
+# Pictures used in the README
+!source/readme/*
