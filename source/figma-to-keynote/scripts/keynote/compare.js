@@ -1,0 +1,101 @@
+// Check the Keynote result against the source, slide by slide.
+//
+//   osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out <dir>] [--flag 12]
+//
+// For every slide with a `ref` picture in the spec, compares it with Keynote's export of the same slide (the i-th spec
+// slide is Keynote's sNN.png, NN = i) and writes:
+//   <out>/sNN.png       side by side, left to right: source | Keynote | where they differ (red)
+//   <out>/flagged.png   every flagged slide on one sheet (source above, Keynote below)
+//   <out>/report.json   per slide: scores, object counts, fonts Keynote used; flagged slides first
+// Scores are the colour difference after a light blur, as a percentage (0 = identical):
+//   score - the whole slide on average;   worst - the worst patch of a 12 x 8 grid (slides are flagged on this one:
+//   a re-wrapped line barely moves the average but lights up its patch).
+// It's a pointer, not a verdict: look at the side-by-side pictures of flagged slides, and spot-check others.
+ObjC.import('Foundation');
+(0, eval)($.NSString.stringWithContentsOfFileEncodingError(ObjC.unwrap($.NSProcessInfo.processInfo.arguments).map(ObjC.unwrap).find(a => /\.js$/.test(a)).replace(/[^/]*$/, 'lib.js'), $.NSUTF8StringEncoding, null).js);
+
+var W = 640, H = 360;
+function blur(px) {  // two passes of a 3 x 3 box blur per channel ≈ a light Gaussian
+  let a = px.rgb;
+  for (let pass = 0; pass < 2; pass++) {
+    const b = new Uint8Array(a.length);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) for (let c = 0; c < 3; c++) {
+      let s = 0, n = 0;
+      for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= H) continue; for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= W) continue; s += a[(yy * W + xx) * 3 + c]; n++; } }
+      b[(y * W + x) * 3 + c] = s / n;
+    }
+    a = b;
+  }
+  return a;
+}
+function diffMap(r, k) {
+  const d = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) d[i] = 0.299 * Math.abs(r[i * 3] - k[i * 3]) + 0.587 * Math.abs(r[i * 3 + 1] - k[i * 3 + 1]) + 0.114 * Math.abs(r[i * 3 + 2] - k[i * 3 + 2]);
+  return d;
+}
+function stats(d) {
+  let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i];
+  const cols = 12, rows = 8, pw = Math.floor(W / cols), ph = Math.floor(H / rows);
+  let worst = 0;
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    let s = 0; for (let y = j * ph; y < (j + 1) * ph; y++) for (let x = i * pw; x < (i + 1) * pw; x++) s += d[y * W + x];
+    worst = Math.max(worst, s / (pw * ph) / 255 * 100);
+  }
+  return { score: sum / d.length / 255 * 100, worst };
+}
+function paste(dst, dw, src, sw, sh, ox, oy) {
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { const s = (y * sw + x) * 3, d = ((oy + y) * dw + ox + x) * 3; dst[d] = src[s]; dst[d + 1] = src[s + 1]; dst[d + 2] = src[s + 2]; }
+}
+
+function run(argv) {
+  if (argv.length < 2) return 'usage: osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out DIR] [--flag 12]';
+  const specPath = abspath(argv[0]), kdir = abspath(argv[1]), base = dirname(specPath);
+  const out = abspath(argOpt(argv, '--out', join(dirname(kdir), 'compare'))), flag = +argOpt(argv, '--flag', 12);
+  const spec = readJSON(specPath);
+  const objsPath = join(dirname(kdir), 'keynote-objects.json'), objs = exists(objsPath) ? readJSON(objsPath) : {};
+  mkdirp(out);
+  const rows = [], pairs = [];
+  spec.slides.forEach((s, idx) => {
+    const i = idx + 1, kpath = join(kdir, 's' + String(i).padStart(2, '0') + '.png');
+    const ko = objs[String(i)] || [];
+    const row = { slide: i, source_n: s.n || i, spec_elements: (s.elements || []).length, keynote_objects: ko.length,
+      keynote_fonts: [...new Set(ko.map(o => o.font).filter(Boolean))].sort() };
+    if (!exists(kpath)) { rows.push(Object.assign(row, { score: null, flagged: true, why: 'Keynote exported no picture for this slide' })); return; }
+    if (!s.ref || !exists(join(base, s.ref))) { rows.push(Object.assign(row, { score: null, flagged: false, why: 'no source picture to compare with' })); return; }
+    const ref = loadPixels(join(base, s.ref), W, H), key = loadPixels(kpath, W, H);
+    const d = diffMap(blur(ref), blur(key)), st = stats(d);
+    // side by side: source | Keynote | diff (red where they differ, the Keynote picture faded underneath)
+    const SW = W * 3 + 16, side = new Uint8Array(SW * H * 3).fill(255), heat = new Uint8Array(W * H * 3);
+    for (let p = 0; p < W * H; p++) {
+      if (d[p] > 24) { heat[p * 3] = 230; heat[p * 3 + 1] = 0; heat[p * 3 + 2] = 0; }
+      else for (let c = 0; c < 3; c++) heat[p * 3 + c] = 150 + (key.rgb[p * 3 + c] / 3 | 0);
+    }
+    paste(side, SW, ref.rgb, W, H, 0, 0); paste(side, SW, key.rgb, W, H, W + 8, 0); paste(side, SW, heat, W, H, 2 * W + 16, 0);
+    const pic = join(out, 's' + String(i).padStart(2, '0') + '.png');
+    savePixels({ w: SW, h: H, rgb: side }, pic);
+    Object.assign(row, { score: Math.round(st.score * 100) / 100, worst: round1(st.worst), flagged: st.worst > flag, picture: pic });
+    if (row.keynote_objects && row.spec_elements && row.keynote_objects < row.spec_elements * 0.8) {
+      row.flagged = true; row.why = `Keynote has ${row.keynote_objects} objects, the spec ${row.spec_elements}: something was dropped`;
+    }
+    if (row.flagged) pairs.push([i, join(base, s.ref), kpath]);
+    rows.push(row);
+  });
+  let sheet = null;
+  if (pairs.length) {
+    const tw = 320, th = 180, cols = Math.min(4, pairs.length), rws = Math.ceil(pairs.length / cols), SW = cols * (tw + 8), SH = rws * (2 * th + 30);
+    const img = new Uint8Array(SW * SH * 3).fill(255);
+    pairs.forEach(([i, r, k], n) => {
+      const x = (n % cols) * (tw + 8), y = Math.floor(n / cols) * (2 * th + 30);
+      paste(img, SW, loadPixels(r, tw, th).rgb, tw, th, x, y); paste(img, SW, loadPixels(k, tw, th).rgb, tw, th, x, y + th + 2);
+    });
+    sheet = join(out, 'flagged.png'); savePixels({ w: SW, h: SH, rgb: img }, sheet);
+  }
+  rows.sort((a, b) => (b.flagged - a.flagged) || ((b.worst || 0) - (a.worst || 0)));
+  const fontsUsed = [...new Set(rows.flatMap(r => r.keynote_fonts))].sort();
+  const report = { slides: rows.length, flagged: rows.filter(r => r.flagged).map(r => r.slide), threshold: flag,
+    fonts_keynote_used: fontsUsed, fonts_missing: fontsUsed.filter(f => !fontLoadable(f)), flagged_sheet: sheet, rows };
+  writeJSON(join(out, 'report.json'), report);
+  const summary = Object.assign({}, report); delete summary.rows;
+  summary.worst_slides = rows.slice(0, 8).map(r => Object.assign({ slide: r.slide, worst: r.worst, score: r.score }, r.why ? { why: r.why } : {}));
+  return JSON.stringify(summary, null, 1);
+}
