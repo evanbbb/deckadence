@@ -33,6 +33,16 @@ For either Keynote converter, Keynote Creator Studio works best. Apple's standar
 
 Account and software needs depend on the converter you choose; see the table above.
 
+### For the PowerPoint converters
+
+**The conversion scripts use tools already built into macOS.** Google Slides → PowerPoint and Figma → PowerPoint need no additional code libraries, Python, npm packages or Keynote. Their scripts and PowerPoint file templates are included in the download.
+
+- **Google Slides:** the assistant needs a browser tool that can run JavaScript in your signed-in deck. If that tool is unavailable, it can guide you through running the supplied extraction script in the browser console.
+- **Figma:** the assistant needs a Figma MCP connection with frame-reading and image-download tools. It checks that the connection has the required capabilities. No third-party PowerPoint export plugin is needed.
+- **PowerPoint:** use an activated copy that can edit and export slides. The assistant can use **computer-use** to operate PowerPoint's interface, export comparison images, test editing and check playback. Computer-use is a capability of the assistant, not a library included in these skills. If app control is unavailable, you can export the images yourself and help check editing and playback.
+
+The scripts can build a PowerPoint file before those app checks, but it stays labelled **draft — PowerPoint rendering unverified** until native checks are completed. The separate Google Slides → Figma converter still needs Python, as shown in the table.
+
 ## Step 1: Install the converter you want
 
 Ask your AI assistant to install the converter that matches your goal. Copy the matching message and paste it into Claude Code or Codex:
