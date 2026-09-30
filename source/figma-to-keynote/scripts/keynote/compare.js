@@ -55,23 +55,26 @@ function run(argv) {
   if (argv.length < 2) return 'usage: osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out DIR] [--flag 12] [--width 1920]';
   const specPath = abspath(argv[0]), kdir = abspath(argv[1]), base = dirname(specPath);
   const out = abspath(argOpt(argv, '--out', join(dirname(kdir), 'compare'))), flag = +argOpt(argv, '--flag', 12);
-  const spec = readJSON(specPath);
+  const spec = readJSON(specPath), renderer = argOpt(argv, '--renderer', 'Keynote');
+  if (!['Keynote', 'PowerPoint'].includes(renderer)) throw new Error('--renderer must be Keynote or PowerPoint');
   W = +argOpt(argv, '--width', 1920);
   if (!Number.isInteger(W) || W < 48 || W > 7680) throw new Error('--width must be an integer from 48 to 7680');
   H = Math.max(27, Math.round(W * (spec.height || 1080) / (spec.width || 1920)));
-  const objsPath = join(dirname(kdir), 'keynote-objects.json'), objs = exists(objsPath) ? readJSON(objsPath) : {};
+  const objsPath = join(dirname(kdir), renderer.toLowerCase() + '-objects.json'), objs = exists(objsPath) ? readJSON(objsPath) : {};
   mkdirp(out);
   const rows = [], pairs = [];
   spec.slides.forEach((s, idx) => {
     const i = idx + 1, kpath = join(kdir, 's' + String(i).padStart(2, '0') + '.png');
     const ko = objs[String(i)] || [];
-    const row = { slide: i, source_n: s.n || i, spec_elements: (s.elements || []).length, keynote_objects: ko.length,
-      keynote_fonts: [...new Set(ko.map(o => o.font).filter(Boolean))].sort() };
-    if (!exists(kpath)) { rows.push(Object.assign(row, { score: null, flagged: true, why: 'Keynote exported no picture for this slide' })); return; }
-    if (!s.ref || !exists(join(base, s.ref))) { rows.push(Object.assign(row, { score: null, flagged: false, why: 'no source picture to compare with' })); return; }
+    const row = { slide: i, source_n: s.n || i, spec_elements: (s.elements || []).length };
+    row[renderer.toLowerCase() + '_objects'] = ko.length;
+    row[renderer.toLowerCase() + '_fonts'] = [...new Set(ko.map(o => o.font).filter(Boolean))].sort();
+    if (!exists(kpath)) { rows.push(Object.assign(row, { score: null, flagged: true, why: renderer + ' exported no picture for this slide' })); return; }
+    if (!s.ref || !exists(join(base, s.ref))) { rows.push(Object.assign(row, { score: null, flagged: renderer === 'PowerPoint', why: 'no source picture to compare with' })); return; }
     row.source_resolution = imageSize(join(base, s.ref));
     row.output_resolution = imageSize(kpath);
     row.low_resolution = [row.source_resolution, row.output_resolution].some(sz => sz.w < W || sz.h < H);
+    row.aspect_mismatch = [row.source_resolution, row.output_resolution].some(sz => Math.abs(sz.h - sz.w * H / W) > 1.5);
     const ref = loadPixels(join(base, s.ref), W, H), key = loadPixels(kpath, W, H);
     const d = diffMap(blur(ref), blur(key)), st = stats(d);
     // side by side: source | Keynote | diff (red where they differ, the Keynote picture faded underneath)
@@ -83,9 +86,9 @@ function run(argv) {
     paste(side, SW, ref.rgb, W, H, 0, 0); paste(side, SW, key.rgb, W, H, W + 8, 0); paste(side, SW, heat, W, H, 2 * W + 16, 0);
     const pic = join(out, 's' + String(i).padStart(2, '0') + '.png');
     savePixels({ w: SW, h: H, rgb: side }, pic);
-    Object.assign(row, { score: Math.round(st.score * 100) / 100, worst: round1(st.worst), flagged: st.worst > flag, picture: pic });
-    if (row.keynote_objects && row.spec_elements && row.keynote_objects < row.spec_elements * 0.8) {
-      row.flagged = true; row.why = `Keynote has ${row.keynote_objects} objects, the spec ${row.spec_elements}: something was dropped`;
+    Object.assign(row, { score: Math.round(st.score * 100) / 100, worst: round1(st.worst), flagged: st.worst > flag || (renderer === 'PowerPoint' && (row.low_resolution || row.aspect_mismatch)), picture: pic });
+    if (ko.length && row.spec_elements && ko.length < row.spec_elements * 0.8) {
+      row.flagged = true; row.why = `${renderer} has ${ko.length} objects, the spec ${row.spec_elements}: something was dropped`;
     }
     if (row.flagged) pairs.push([i, join(base, s.ref), kpath]);
     rows.push(row);
@@ -101,10 +104,11 @@ function run(argv) {
     sheet = join(out, 'flagged.png'); savePixels({ w: SW, h: SH, rgb: img }, sheet);
   }
   rows.sort((a, b) => (b.flagged - a.flagged) || ((b.worst || 0) - (a.worst || 0)));
-  const fontsUsed = [...new Set(rows.flatMap(r => r.keynote_fonts))].sort();
-  const report = { slides: rows.length, flagged: rows.filter(r => r.flagged).map(r => r.slide), threshold: flag,
+  const fontsUsed = [...new Set(rows.flatMap(r => r.keynote_fonts || r.powerpoint_fonts || []))].sort();
+  const report = { renderer, slides: rows.length, flagged: rows.filter(r => r.flagged).map(r => r.slide), threshold: flag,
     comparison_resolution: { w: W, h: H }, low_resolution_slides: rows.filter(r => r.low_resolution).map(r => r.slide),
     fonts_keynote_used: fontsUsed, fonts_missing: fontsUsed.filter(f => !fontLoadable(f)), flagged_sheet: sheet, rows };
+  if (renderer === 'PowerPoint') { report.fonts_powerpoint_used = report.fonts_keynote_used; delete report.fonts_keynote_used; }
   writeJSON(join(out, 'report.json'), report);
   const summary = Object.assign({}, report); delete summary.rows;
   summary.worst_slides = rows.slice(0, 8).map(r => Object.assign({ slide: r.slide, worst: r.worst, score: r.score }, r.why ? { why: r.why } : {}));

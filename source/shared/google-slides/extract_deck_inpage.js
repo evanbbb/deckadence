@@ -16,7 +16,7 @@
 //   manifest.json             [{n, page, notes, background, youtube:[obj], images:[...], texts:[...], shapes:[...]}]
 //   ref/sNN.png               vector export rendered at 1920px wide; PNG fallback is flagged if smaller
 //   media/sNN_K.<ext>         original image K of slide NN (png/jpg/gif/webp; up to 2048px long edge)
-// All rects are in 1920x1080 slide coordinates. images[].full = uncropped bounds, images[].vis = visible (cropped) area.
+// All rects are normalized to 1920 pixels wide, preserving the source slide aspect ratio. images[].full = uncropped bounds, images[].vis = visible (cropped) area.
 (() => {
   if (window.__EXTRACT && window.__EXTRACT.status === 'running') return 'already running: ' + window.__EXTRACT.done + '/' + window.__EXTRACT.total;
   const opts = Object.assign({ download: true, renders: true, refWidth: 1920, slides: null }, window.__EXTRACT_OPTS || {});
@@ -35,25 +35,34 @@
     try {
       const response = await fetch('/presentation/d/' + deckId + '/export/svg?pageid=' + encodeURIComponent(pid));
       if (!response.ok) throw new Error('SVG export HTTP ' + response.status);
-      const doc = new DOMParser().parseFromString(await response.text(), 'image/svg+xml');
-      if (doc.querySelector('parsererror') || doc.documentElement.localName !== 'svg') throw new Error('invalid SVG export');
-      // Make referenced images self-contained before drawing, avoiding a tainted canvas.
-      for (const node of doc.querySelectorAll('image')) {
-        const href = node.getAttribute('href') || node.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
-        if (href && !href.startsWith('data:') && !href.startsWith('#')) {
+      let svg = await response.text();
+      if (!/<svg\b/.test(svg)) throw new Error('invalid SVG export');
+      // The Google editor enforces Trusted Types even for XML DOMParser.
+      // Replace only image URI attributes in vendor-generated SVG text; no DOM injection.
+      const images = svg.match(/<image\b[^>]*>/g) || [];
+      const unescape = s => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+        .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n,16)));
+      for (const tag of images) {
+        let replacement = tag;
+        for (const match of tag.matchAll(/(?:xlink:)?href=["']([^"']+)["']/g)) {
+          const href = unescape(match[1]);
+          if (href.startsWith('data:') || href.startsWith('#')) continue;
           const r = await fetch(new URL(href, response.url));
           if (!r.ok) throw new Error('SVG image HTTP ' + r.status);
           const imageBlob = await r.blob();
           const data = await new Promise((resolve, reject) => { const f = new FileReader(); f.onload = () => resolve(f.result); f.onerror = reject; f.readAsDataURL(imageBlob); });
-          node.setAttribute('href', data); node.setAttributeNS('http://www.w3.org/1999/xlink', 'href', data);
+          replacement = replacement.replace(match[0], match[0].replace(match[1], data));
         }
+        svg = svg.replace(tag, replacement);
       }
       await document.fonts.ready;
-      const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(doc)], { type: 'image/svg+xml' }));
+      const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
       try {
         const img = new Image();
         await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('SVG render failed')); img.src = url; });
-        const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = Math.round(width * img.naturalHeight / img.naturalWidth);
+        const canvas = document.createElement('canvas'); canvas.width = width;
+        const ratio = opts.sourceSize ? opts.sourceSize.heightIn / opts.sourceSize.widthIn : img.naturalHeight / img.naturalWidth;
+        canvas.height = Math.round(width * ratio);
         if (!canvas.height) throw new Error('SVG has no dimensions');
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -139,7 +148,7 @@
     const s = 1920 / pr.width;
     const rel = r => ({ x: Math.round((r.x - pr.x) * s), y: Math.round((r.y - pr.y) * s), w: Math.round(r.width * s), h: Math.round(r.height * s) });
     const objOf = el => { const o = el.closest('[id^="editor-"]:not([id="editor-' + pid + '"])'); return o ? o.id.replace('editor-', '').replace(/-paragraph-\d+$/, '') : ''; };
-    const slide = { n, page: pid, notes: '', background: null, youtube: [], images: [], texts: [], shapes: [] };
+    const slide = { n, page: pid, width: 1920, height: Math.round(opts.sourceSize ? 1920 * opts.sourceSize.heightIn / opts.sourceSize.widthIn : pr.height * s), notes: '', background: null, artwork: [], sourceErrors: [], youtube: [], images: [], texts: [], shapes: [] };
     // z: drawing order (document order = back to front), so the builder can stack images, shapes and text correctly
     const zOf = new Map(); { let i = 0; for (const e of pg.querySelectorAll('*')) zOf.set(e, i++); }
     const toSlide = (x, y) => ({ x: Math.round((x - pr.x) * s * 10) / 10, y: Math.round((y - pr.y) * s * 10) / 10 });
@@ -205,6 +214,10 @@
         italic: (t.getAttribute('font-style') || cs.fontStyle) === 'italic',
         color: t.getAttribute('fill') || cs.fill,
       };
+      try {
+        const p = t.getStartPositionOfChar(0);
+        if (m) run.baseline = Math.round((m.b * p.x + m.d * p.y + m.f - pr.y) * s * 10) / 10;
+      } catch (_) { /* Older editor SVGs may not expose character positions. */ }
       if (!paras.has(key)) paras.set(key, []);
       paras.get(key).push(run);
     }
@@ -243,19 +256,77 @@
       const hasFill = fill && fill !== 'none' && fillOp > 0.01 && !/rgba\(0, 0, 0, 0\)|transparent/.test(fill);
       const hasStroke = stroke && stroke !== 'none' && strokeOp > 0.01 && sw > 0 && sw < 60;
       if (!hasFill && !hasStroke) continue;
-      const rec = { obj: objOf(el), z: zOf.get(el), tag: el.tagName, rect: rel(r), fill: hasFill ? fill : null, fillOpacity: Math.round(fillOp * op * 100) / 100,
+      const rec = { sourceId: pid + ':' + (objOf(el) || el.id || 'art-' + zOf.get(el)), obj: objOf(el), z: zOf.get(el), tag: el.tagName, rect: rel(r), fill: hasFill ? fill : null, fillOpacity: Math.round(fillOp * op * 100) / 100,
         stroke: hasStroke ? stroke : null, strokeWidth: hasStroke ? Math.round(sw * 10) / 10 : 0 };
+      if (el.tagName === 'rect' && +el.getAttribute('rx')) rec.radius = +el.getAttribute('rx') * (m ? Math.hypot(m.a, m.b) : 1) * s;
       // Anything that isn't a plain rectangle (rounded boxes, arrows, blobs): trace its outline in slide coordinates
       if (el.tagName === 'path') { const poly = tracePath(el, toSlide); if (poly) rec.path = poly; }
       // full-slide fills: the last one in DOM order is on top, so it is the visible background
-      if (rec.fill && rec.fillOpacity > 0.5 && rec.rect.w >= 1900 && rec.rect.h >= 1060) { slide.background = rec.fill; continue; }
+      if (rec.fill && rec.fillOpacity > 0.5 && rec.rect.w >= slide.width - 20 && rec.rect.h >= slide.height - 20) { slide.background = rec.fill; continue; }
       if (slide.shapes.length < 300) slide.shapes.push(rec);
+      else if (!slide.sourceErrors.length) { slide.sourceErrors.push('shape limit reached; source extraction is incomplete'); X.warnings.push('slide ' + n + ': shape limit reached'); }
+    }
+
+    // Retain unsupported paint/compositing as reviewable reconstruction work.
+    // A bounding-box approximation must not silently discard a paint server or effect.
+    const artworkSeen = new Set();
+    for (const el of pg.querySelectorAll('g, path, rect, ellipse, circle, polygon, image, text')) {
+      if (el.closest('clipPath, defs')) continue;
+      const cs = getComputedStyle(el), reasons = [];
+      if (/url\(/.test(cs.fill || '') || /url\(/.test(cs.stroke || '')) reasons.push('gradient or pattern paint');
+      if (cs.filter && cs.filter !== 'none') reasons.push('filter or shadow');
+      if (opts.exactPaths && el.tagName === 'path' && !exactPath(el.getAttribute('d') || '', el.getScreenCTM(), toSlide)) reasons.push('sampled path needs editable reconstruction/check');
+      if (cs.mixBlendMode && cs.mixBlendMode !== 'normal') reasons.push('blend mode');
+      if (el.tagName === 'g' && +cs.opacity < 0.999 && +cs.opacity > 0) reasons.push('group opacity');
+      const m = el.getScreenCTM?.();
+      if (['rect','ellipse','circle'].includes(el.tagName) && m && (Math.abs(m.b) > 0.001 || Math.abs(m.c) > 0.001)) reasons.push('transformed geometry');
+      if (!reasons.length) continue;
+      const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) continue;
+      const obj = objOf(el), id = pid + ':' + (obj || el.id || 'art-' + zOf.get(el));
+      if (artworkSeen.has(id)) continue;
+      artworkSeen.add(id);
+      const definitions = [cs.fill, cs.stroke, cs.filter].flatMap(v => { const id = (v || '').match(/#([^\)\"']+)/)?.[1]; const def = id ? document.getElementById(id) : null; return def ? [def.outerHTML] : []; });
+      slide.artwork.push({ id, obj, why: reasons, rect: rel(r), z: zOf.get(el), source: el.outerHTML, definitions,
+        computedStyle: {fill:cs.fill,stroke:cs.stroke,filter:cs.filter,mixBlendMode:cs.mixBlendMode,opacity:cs.opacity} });
+      X.warnings.push('slide ' + n + ': artwork ' + id + ' needs editable reconstruction/check (' + reasons.join(', ') + ')');
     }
 
     // speaker notes (visible panel for the current slide; best effort)
     const notesEl = document.querySelector('#speakernotes-workspace, [id^="speakernotes"] .punch-viewer-speakernotes-text-body-scrollable, [id^="speakernotes"]');
     if (notesEl) slide.notes = notesEl.innerText.replace(/Click to add speaker notes/i, '').trim();
     return slide;
+  }
+
+  // Preserve native Bezier geometry, including relative and shorthand commands.
+  // Arcs remain explicitly flagged for reconstruction rather than silently mangled.
+  function exactPath(d, m, toSlide) {
+    if (!m) return null;
+    const tokens = d.match(/[A-Za-z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || [];
+    let at = 0, command = '', x = 0, y = 0, sx = 0, sy = 0, previous = '', control = null;
+    const out = [], arity = {M:2,L:2,H:1,V:1,C:6,S:4,Q:4,T:2};
+    const point = (a,b) => { const p=toSlide(m.a*a+m.c*b+m.e,m.b*a+m.d*b+m.f); return p.x+' '+p.y; };
+    while (at < tokens.length) {
+      if (/^[A-Za-z]$/.test(tokens[at])) command = tokens[at++];
+      const kind = command.toUpperCase(), relative = command !== kind;
+      if (kind === 'Z') { out.push('Z'); x=sx; y=sy; previous='Z'; control=null; command=''; continue; }
+      const n=arity[kind]; if (!n || at+n > tokens.length) return null;
+      const values=tokens.slice(at,at+n).map(Number); if (!values.every(Number.isFinite)) return null;
+      at+=n;
+      const pair=i=>[values[i]+(relative?x:0),values[i+1]+(relative?y:0)];
+      let end, curves=[];
+      if (kind==='H') end=[values[0]+(relative?x:0),y];
+      else if (kind==='V') end=[x,values[0]+(relative?y:0)];
+      else if (kind==='C') { curves=[pair(0),pair(2)]; end=pair(4); }
+      else if (kind==='S') { curves=[['C','S'].includes(previous)&&control?[2*x-control[0],2*y-control[1]]:[x,y],pair(0)]; end=pair(2); }
+      else if (kind==='Q') { curves=[pair(0)]; end=pair(2); }
+      else if (kind==='T') { curves=[['Q','T'].includes(previous)&&control?[2*x-control[0],2*y-control[1]]:[x,y]]; end=pair(0); }
+      else end=pair(0);
+      const outputKind=kind==='M'?'M':curves.length===2?'C':curves.length===1?'Q':'L';
+      out.push(outputKind+' '+[...curves,end].map(p=>point(...p)).join(' '));
+      if(kind==='M') { sx=end[0]; sy=end[1]; command=relative?'l':'L'; }
+      previous=kind; control=curves.length?curves[curves.length-1]:null; [x,y]=end;
+    }
+    return out.length?out.join(' '):null;
   }
 
   // Outline of an SVG path as absolute "M x y L … Z" in slide px. Plain axis-aligned rectangles return null (drawn as boxes).
@@ -268,6 +339,7 @@
     const plain = subs.length === 1 && !/[CcQqAaSsTt]/.test(d) && (d.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).length <= 12;
     const m = ctm || el.getScreenCTM(); if (!m) return null;
     if (ctm && plain) return null;  // a rectangular crop is already handled by the crop itself
+    if (opts.exactPaths) { const exact=exactPath(d,m,toSlide); if(exact) return exact; }
     const ns = 'http://www.w3.org/2000/svg', tmp = document.createElementNS(ns, 'path');
     el.parentNode.appendChild(tmp);
     const out = [];
@@ -352,7 +424,7 @@
         X.done++;
       }
       add('manifest.json', new Blob([JSON.stringify(manifest, null, 1)], { type: 'application/json' }));
-      add('deck.json', new Blob([JSON.stringify({ deckId, title, url: location.origin + '/presentation/d/' + deckId + '/edit', slideCount: all.length, youtube: yt, warnings: X.warnings, extractedAt: new Date().toISOString() }, null, 1)], { type: 'application/json' }));
+      add('deck.json', new Blob([JSON.stringify({ deckId, title, url: location.origin + '/presentation/d/' + deckId + '/edit', slideCount: all.length, requestedSlides: wanted, physicalSize: opts.sourceSize || null, youtube: yt, warnings: X.warnings, extractedAt: new Date().toISOString() }, null, 1)], { type: 'application/json' }));
       X.status = 'done';
       if (opts.download) X.zip = await window.__EXTRACT_ZIP();
     } catch (e) { X.status = 'error'; X.error = e.message; }

@@ -2,7 +2,7 @@
 
 ![Deckadence: rainbow lettering over flames, and a woman raising her arms in celebration](source/readme/deckadence.gif)
 
-**Deckadence helps you move slides between Google Slides, Figma and Keynote.** Choose the converter for your goal, then ask an AI assistant on your Mac to do the work. It rebuilds the slides, keeps text editable, and checks the result against the original.
+**Deckadence helps you move slides between Google Slides, Figma, Keynote and PowerPoint.** Choose the converter for your goal, then ask an AI assistant on your Mac to do the work. It rebuilds the slides, keeps text editable, and checks the result against the original.
 
 You don't need to know how to code. Each converter has its own requirements. For example, Google Slides → Figma does not need Keynote.
 
@@ -13,6 +13,10 @@ You don't need to know how to code. Each converter has its own requirements. For
 | **Google Slides → Figma** | A Google Slides deck | Pages in a Figma file | A Figma account and Python |
 | **Google Slides → Keynote** | A Google Slides deck | A Keynote file | Keynote |
 | **Figma → Keynote** | Slide-sized frames in a Figma file | A Keynote file | Keynote and a Figma account |
+| **Google Slides → PowerPoint (preview)** | A Google Slides deck | A PowerPoint file | PowerPoint to check the result |
+| **Figma → PowerPoint (preview)** | Selected Figma Design frames | A PowerPoint file | A Figma connection and PowerPoint to check the result |
+
+**The PowerPoint converters are in preview.** A ten-slide Google source pilot and a five-frame Figma pilot have been built, opened and compared in Mac PowerPoint 16.113.3 at Full HD. Codex and Claude Code both ran the conversion and package checks. Font matches still need care: the pilots retain source names with specific matches marked unverified, and two Figma picture filters were flattened only after failed editable attempts and approval. They preserve the source design, ask about conversion choices, and require an editable artwork attempt before asking to flatten it. They do not need Keynote or a third-party Figma export plugin.
 
 Each converter is separate. Install only the ones you need.
 
@@ -35,6 +39,8 @@ Ask your AI assistant to install the converter that matches your goal. Copy the 
 
 - **Google Slides → Figma:** “Please install the Deckadence skill from https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-figma.zip into my skills folder.”
 - **Google Slides → Keynote:** “Please install the Deckadence skill from https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-keynote.zip into my skills folder.”
+- **Google Slides → PowerPoint (preview):** “Please install the Deckadence skill from https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-powerpoint.zip into my skills folder.”
+- **Figma → PowerPoint (preview):** “Please install the Deckadence skill from https://github.com/evanbbb/deckadence/raw/main/skills/figma-to-powerpoint.zip into my skills folder.”
 - **Figma → Keynote:** “Please install the Deckadence skill from https://github.com/evanbbb/deckadence/raw/main/skills/figma-to-keynote.zip into my skills folder.”
 
 When the assistant says it's done, **quit the assistant and open it again**, so it finds the new converter.
@@ -45,6 +51,8 @@ When the assistant says it's done, **quit the assistant and open it again**, so 
 1. **Download** the converter you want. Click its link, and the file goes to your Downloads folder:
    - [Google Slides → Figma](https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-figma.zip)
    - [Google Slides → Keynote](https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-keynote.zip)
+   - [Google Slides → PowerPoint (preview)](https://github.com/evanbbb/deckadence/raw/main/skills/google-slides-to-powerpoint.zip)
+   - [Figma → PowerPoint (preview)](https://github.com/evanbbb/deckadence/raw/main/skills/figma-to-powerpoint.zip)
    - [Figma → Keynote](https://github.com/evanbbb/deckadence/raw/main/skills/figma-to-keynote.zip)
 2. **Open the download.** In Finder, open Downloads and double-click the file. Your Mac turns it into a folder with the same name.
 3. **Open your assistant's skills folder.** In Finder, choose **Go → Go to Folder…** and paste the address for your assistant:
@@ -63,6 +71,8 @@ Open your AI assistant and ask for what you want, in your own words. For example
 
 - *"Put my Google Slides deck into Figma."*
 - *"Turn this Google Slides deck into a Keynote file: https://docs.google.com/presentation/d/…"*
+- *"Rebuild this Google Slides deck as editable PowerPoint, keeping its design: https://docs.google.com/presentation/d/…"*
+- *"Convert these Figma frames to PowerPoint. Ask me about order and any conversion choices: https://www.figma.com/design/…"*
 - *"Make a Keynote deck from the frames on this Figma page: https://www.figma.com/design/…"*
 
 The exact steps depend on the converter. The assistant asks a few short questions about your source and destination, checks fonts or colours with you when needed, builds the slides, and checks the result against the original. Keynote conversions start with a small sample; when moving several decks into Figma, it starts with one deck so you can review the result first.
@@ -89,7 +99,9 @@ The exact steps depend on the converter. The assistant asks a few short question
 - **Figma artwork:** the assistant attempts editable gradients, shadows and complex artwork, checks them, and asks before turning a failed reconstruction into a picture. Background pictures keep the slide’s text separate and editable.
 - **When converting to Figma:** GIFs need one drag from you to play. The assistant tells you which folder to drag in.
 
-**Where your files go:** Keynote files are saved on your Mac. Google Slides → Figma creates pages in your Figma file and uploads slide images there. While it works, your AI assistant can see slide content and sends what it needs to the company that makes it, as it does for any task you give it.
+**PowerPoint checks:** the assistant needs PowerPoint renders of the exact output file to compare with the source. It asks about slide size, fonts, media and unsupported content. A file checked only for package structure is labelled a draft. Text stays editable when an approved background becomes a picture.
+
+**Where your files go:** PowerPoint and Keynote files are saved on your Mac. Google Slides → Figma creates pages in your Figma file and uploads slide images there. While it works, your AI assistant can see slide content and sends what it needs to the company that makes it, as it does for any task you give it.
 
 ## If something goes wrong
 
@@ -110,7 +122,7 @@ These skills must work in **both Codex and Claude Code** (and other AI coding to
 
 1. **No Claude-specific tooling in the skills.** Don't name or rely on tools only one AI tool has: no `AskUserQuestion`, no Claude-only browser tools as the only route, no slash commands, no Claude plugin skills as a requirement. Write "ask the user" (each skill explains how) and describe tools generically ("a browser tool that can run JavaScript in a page", "the Figma MCP server"). MCP servers are fine: both tools support them.
 2. **Keep user files in the chosen destination.** Don't publish anything to claude.ai or send decks and results to unrelated services. Google Slides → Figma uploads slide images to the user's chosen Figma file; the Keynote converters save their output on the user's Mac.
-3. **Nothing to install, no admin rights** (the Keynote skills). Scripts are JavaScript for Automation (`osascript -l JavaScript`) plus tools that ship with macOS. No Python, npm or Homebrew dependencies.
+3. **Nothing to install, no admin rights** (the Keynote and PowerPoint skills). Scripts are JavaScript for Automation (`osascript -l JavaScript`) plus tools that ship with macOS. No Python, npm or Homebrew dependencies.
 4. **Test in both tools.** Try each changed converter in Claude Code and Codex (`codex exec` in a folder with the skill under `.agents/skills/`), using a small pilot that fits that workflow. Codex's sandbox blocks controlling Keynote by default: Keynote skills must still get permission to do that, as `references/setup.md` explains.
 5. **Test in small batches.** Use varied slides or frames, re-test affected ones after a fix, and ask before processing a full user deck.
 6. **Keep this README readable for people who don't use GitHub or a terminal** (plain language, ISO 24495-1). Technical detail goes in this section or in `source/`.
@@ -124,8 +136,12 @@ source/
   google-slides-to-figma/      skill: Google Slides → Figma
   google-slides-to-keynote/    skill: Google Slides → Keynote
   figma-to-keynote/            skill: Figma → Keynote
+  google-slides-to-powerpoint/ skill: Google Slides → PowerPoint
+  figma-to-powerpoint/         skill: Figma → PowerPoint
   shared/
-    google-slides/             the Google Slides reader (used by both Google Slides skills)
+    google-slides/             the Google Slides extractor and neutral reader
+    figma/                     the Figma frame reader, neutral reader and background export helper
+    powerpoint/                direct PowerPoint build, validation and native-render check
     keynote/                   the Keynote builder and checker (used by both Keynote skills)
   readme/                      pictures used on this page
   sync-shared.sh               copies shared/ into each skill that uses it
@@ -139,3 +155,7 @@ source/
 - Install locations: Claude Code reads `~/.claude/skills` (or a project's `.claude/skills`); Codex reads `~/.agents/skills` (or a project's `.agents/skills`).
 
 Not tracked in git (see `.gitignore`): slide images and GIFs (except `source/readme/`), browser session state (`.gstack/`, which holds sign-in cookies), deck extracts and working folders.
+
+The [PowerPoint pilot validation record](source/tests/powerpoint-pilot-results.md) describes the checks and accepted exceptions.
+
+PowerPoint development checks: `node --test source/tests/fidelity.test.js source/tests/powerpoint.test.js`. Shared readers and the DrawingML writer are synchronized into both output families. The PowerPoint writer uses `--target powerpoint` and retains recorded source page properties; `--width-in <confirmed width>` is needed when the source has no physical size. Keynote retains its existing import profile. The Windows native exporter requires desktop PowerPoint. The native pilots cover one Google deck and five Figma frames on Mac PowerPoint 16.113.3; this is not a guarantee for every design, font or PowerPoint platform. Windows export remains untested live. Synthetic fixtures and assistant question pilots do not establish native fidelity. The preview skills require a fresh native review of each conversion.

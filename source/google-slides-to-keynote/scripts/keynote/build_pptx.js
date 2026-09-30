@@ -1,4 +1,5 @@
-// Build the hand-over PowerPoint file from a deck spec (see deck-spec.md), laid out so Keynote imports it cleanly.
+// Build a PPTX from a deck spec. Default profile targets Keynote import;
+// --target powerpoint selects native Office typography and physical page scaling.
 //
 //   osascript -l JavaScript build_pptx.js <deck-spec.json> <out.pptx> [--font-map '{"Proxima Nova":"Helvetica Neue"}']
 //
@@ -12,6 +13,7 @@
 ObjC.import('Foundation');
 (0, eval)($.NSString.stringWithContentsOfFileEncodingError(ObjC.unwrap($.NSProcessInfo.processInfo.arguments).map(ObjC.unwrap).find(a => /\.js$/.test(a)).replace(/[^/]*$/, 'lib.js'), $.NSUTF8StringEncoding, null).js);
 
+var TARGET = 'keynote', SCALE = 1;
 var PT = 12700;                                  // EMU per point (1 slide px = 1 pt)
 var E = v => Math.round((v || 0) * PT);
 var HERE = dirname(ObjC.unwrap($.NSProcessInfo.processInfo.arguments).map(ObjC.unwrap).find(a => /\.js$/.test(a)));
@@ -26,16 +28,40 @@ var STYLE_WEIGHTS = [['thin', 100], ['hairline', 100], ['extralight', 200], ['ul
   ['black', 900], ['bold', 700]];
 function styleWeight(st) { const s = (st || '').toLowerCase().replace(/[\s_-]/g, ''); for (const [k, w] of STYLE_WEIGHTS) if (s.includes(k)) return w; return 400; }
 const isItalicFace = f => /italic|oblique/i.test(f.style) || (f.traits & 1) === 1;
+function exactPowerPointFace(faces, weight, italic, style) {
+  const norm = v => v.toLowerCase().replace(/[\s_-]/g, '');
+  return faces.find(f => styleWeight(f.style) === weight && isItalicFace(f) === italic && (!style || norm(f.style) === norm(style)));
+}
 function Fonts(spec, fontMap) {
-  this.map = fontMap || {}; this.faces = {}; this.missing = {};
+  this.map = fontMap || {}; this.faces = {}; this.missing = {}; this.unresolved = []; this.variations = [];
   const fam = f => { const t = this.map[(f || '').trim()]; return (t && (t.to || t)) || (f || '').trim(); };
   this.family = fam;
   for (const s of spec.slides) for (const el of s.elements || []) if (el.type === 'text')
     for (const p of el.paragraphs || []) for (const r of p.runs || []) if (r.font) { const f = fam(r.font); if (!(f in this.faces)) this.faces[f] = fontFaces(f); }
 }
 // -> {name, italic}: the PostScript name of the nearest face (exact style name first), and whether that face is italic.
-Fonts.prototype.resolve = function (family, weight, italic, style) {
+Fonts.prototype.resolve = function (family, weight, italic, style, variations) {
   const fam = this.family(family), faces = this.faces[fam] || [];
+  if (TARGET === 'powerpoint') {
+    const want = variations?.wght ?? (weight || styleWeight(style)), it = !!italic || /italic|oblique/i.test(style || '');
+    // Office run styles can express an exact named weight. Other variable axes
+    // remain unverified rather than silently disappearing from the source data.
+    const axes = Object.fromEntries(Object.entries(variations || {}).filter(([axis]) => axis !== 'wght'));
+    if (Object.keys(axes).length && !this.variations.some(f => f.family === fam && f.style === (style || '') && JSON.stringify(f.axes) === JSON.stringify(axes)))
+      this.variations.push({ family: fam, style: style || '', axes, reason: 'variable font axes not represented by native run properties' });
+    const exact = exactPowerPointFace(faces, want, it, style);
+    if (!faces.length) this.missing[fam] = (this.missing[fam] || 0) + 1;
+    if (!exact && !this.unresolved.some(f => f.family === fam && f.style === (style || '') && f.weight === want && f.italic === it))
+      this.unresolved.push({ family: fam, style: style || '', weight: want, italic: it });
+    // Regular/Bold use Office's family and independent style flags. Other weights
+    // use the installed face's human display name, never a guessed nearest weight.
+    if (exact && (!['regular', 'normal', 'roman', 'bold', 'italic', 'oblique', 'bolditalic', 'boldoblique'].includes(exact.style.toLowerCase().replace(/[\s_-]/g, '')) || ![400, 700].includes(want))) {
+      const face = $.NSFont.fontWithNameSize(exact.ps, 12);
+      return { name: ObjC.unwrap(face.displayName), italic: it, bold: false };
+    }
+    return { name: fam, italic: it, bold: want === 700 };
+  }
+
   if (!faces.length) { this.missing[fam] = (this.missing[fam] || 0) + 1; return { name: fam, italic: !!italic, bold: (weight || 400) >= 600 }; }
   if (style) {
     const norm = v => v.toLowerCase().replace(/[\s-]/g, '');
@@ -84,7 +110,8 @@ function gradientXml(el) {
 }
 function effectsXml(el) {
   const shadows = el.shadows || [];
-  return '<a:effectLst>' + shadows.map(s => {
+  const blur = TARGET === 'powerpoint' && el.blur ? `<a:blur rad="${E(el.blur.radius)}" grow="${el.blur.grow === false ? 0 : 1}"/>` : '';
+  return '<a:effectLst>' + blur + shadows.map(s => {
     if (!['inner', 'outer'].includes(s.type)) throw new Error('unsupported shadow');
     const tag = s.type === 'inner' ? 'innerShdw' : 'outerShdw';
     const angle = ((Math.atan2(s.y || 0, s.x || 0) * 180 / Math.PI + 360) % 360) * 60000;
@@ -100,7 +127,7 @@ function xfrm(x, y, w, h, rot, flipH, flipV) {
   let attrs = '';
   if (rot) attrs += ` rot="${Math.round((((rot % 360) + 360) % 360) * 60000)}"`;
   if (flipH) attrs += ' flipH="1"'; if (flipV) attrs += ' flipV="1"';
-  return `<a:xfrm${attrs}><a:off x="${E(x)}" y="${E(y)}"/><a:ext cx="${E(Math.max(0.5, w))}" cy="${E(Math.max(0.5, h))}"/></a:xfrm>`;
+  return `<a:xfrm${attrs}><a:off x="${E(x)}" y="${E(y)}"/><a:ext cx="${E(Math.max(TARGET === 'powerpoint' ? 0 : 0.5, w))}" cy="${E(Math.max(TARGET === 'powerpoint' ? 0 : 0.5, h))}"/></a:xfrm>`;
 }
 function prst(name, adj) {
   return `<a:prstGeom prst="${name}"><a:avLst>${adj != null ? `<a:gd name="adj" fmla="val ${Math.round(adj)}"/>` : ''}</a:avLst></a:prstGeom>`;
@@ -163,7 +190,7 @@ Slide.prototype.image = function (el, base) {
   }
   let crop = el.crop, mask = el.mask, flipH = el.flipH, flipV = el.flipV;
   const info = ext === '.gif' ? imageSize(src) : null;
-  if (info && info.frames > 1 && (crop || mask)) {
+  if (TARGET === 'keynote' && info && info.frames > 1 && (crop || mask)) {
     // Keynote turns GIFs into movies and ignores crops and masks on them: cut the GIF itself, frame by frame
     const c = crop || { l: 0, t: 0, r: 0, b: 0 };
     const cx = c.l * info.w, cy = c.t * info.h, cw = info.w * (1 - c.l - c.r), ch = info.h * (1 - c.t - c.b);
@@ -181,52 +208,86 @@ Slide.prototype.image = function (el, base) {
   const rid = this.rel('image', '../media/' + name), id = this.nextId();
   const link = el.link ? `<a:hlinkClick r:id="${this.rel('hyperlink', el.link, true)}"/>` : '';
   const alpha = el.opacity != null && el.opacity < 0.999 ? `<a:alphaModFix amt="${Math.round(el.opacity * 100000)}"/>` : '';
+  // Native picture effects retain the original bitmap and remain removable.
+  // Reconstruction candidates still need comparison in the target renderer.
+  let pictureEffects = '';
+  if (TARGET === 'powerpoint' && el.imageEffects) {
+    if (el.imageEffects.grayscale) pictureEffects += '<a:grayscl/>';
+    if (el.imageEffects.duotone) pictureEffects += '<a:duotone>' + el.imageEffects.duotone.map(c => `<a:srgbClr val="${hex6(c)}"/>`).join('') + '</a:duotone>';
+    if (el.imageEffects.saturation != null) pictureEffects += `<a:hsl hue="0" sat="${Math.round((1 + el.imageEffects.saturation) * 100000)}" lum="100000"/>`;
+    if (el.imageEffects.brightness != null) pictureEffects += `<a:lum bright="${Math.round(el.imageEffects.brightness * 100000)}" contrast="0"/>`;
+  }
   const src_rect = crop ? `<a:srcRect l="${Math.round(crop.l * 100000)}" t="${Math.round(crop.t * 100000)}" r="${Math.round(crop.r * 100000)}" b="${Math.round(crop.b * 100000)}"/>` : '';
   let geom = prst('rect');
   if (mask === 'ellipse') geom = prst('ellipse');
   else if (mask && mask.roundRect != null) geom = prst('roundRect', Math.min(50000, mask.roundRect / Math.max(1, Math.min(el.w, el.h)) * 100000));
   else if (mask && mask.path) geom = custGeom(parsePath(mask.path), [el.x, el.y, el.w, el.h]);
-  this.xml.push(`<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Picture ${id}" descr="${esc(basename(el.file))}">${link}</p:cNvPr><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}">${alpha}</a:blip>${src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${xfrm(el.x, el.y, el.w, el.h, el.rotation, flipH, flipV)}${geom}${effectsXml(el)}</p:spPr></p:pic>`);
+  this.xml.push(`<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Picture ${id}" descr="${esc(basename(el.file))}">${link}</p:cNvPr><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}">${alpha}${pictureEffects}</a:blip>${src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${xfrm(el.x, el.y, el.w, el.h, el.rotation, flipH, flipV)}${geom}${effectsXml(el)}</p:spPr></p:pic>`);
 };
 var ALIGN = { left: 'l', center: 'ctr', right: 'r', justify: 'just' }, ANCHOR = { top: 't', middle: 'ctr', bottom: 'b' };
 Slide.prototype.text = function (el) {
   const id = this.nextId(), ranges = [];
+  let y = el.y;
+  if (TARGET === 'powerpoint' && Number.isFinite(el.sourceBaselineY) && (!el.valign || el.valign === 'top') && !el.rotation) {
+    const p = el.paragraphs?.[0], runs = [], metrics = [];
+    for (const r of p?.runs || []) {
+      if (r.text?.split('\v')[0]) runs.push(r);
+      if (r.text?.includes('\v')) break;
+    }
+    for (const r of runs) {
+      const faces = this.fonts.faces[this.fonts.family(r.font)] || [];
+      const f = exactPowerPointFace(faces, r.fontVariations?.wght ?? (r.weight || styleWeight(r.style)), !!r.italic || /italic|oblique/i.test(r.style || ''), r.style);
+      if (!f) { metrics.length = 0; break; }
+      const font = $.NSFont.fontWithNameSize(f.ps, r.size || 24);
+      metrics.push({a:Number(font.ascender),d:-Number(font.descender),size:r.size || 24});
+    }
+    if (metrics.length) {
+      const a = Math.max(...metrics.map(m => m.a)), d = Math.max(...metrics.map(m => m.d));
+      const lineHeight = p.lineHeightPx || Math.max(...metrics.map(m => m.size)) * (p.lineSpacing || 1.2);
+      // Native Mac pilot: PowerPoint places the first baseline within the line
+      // height according to the face's ascent/descent, rather than SVG's em box.
+      // Retain the source baseline and derive the editable box origin; every
+      // resulting deck still requires its own native comparison.
+      if (a > 0 && a + d > 0) y = el.sourceBaselineY - lineHeight * a / (a + d);
+    }
+  }
   let pos = 0, paras = '';
   (el.paragraphs || []).forEach((p, i) => {
     if (i) pos += 1;   // paragraph end = one character in Keynote's text
-    let ppr = `<a:pPr algn="${ALIGN[p.align] || 'l'}"${p.bullet ? ` marL="${E(1.2 * 24)}" indent="${-E(1.2 * 24)}"` : ''}>`;
-    if (p.lineHeightPx) ppr += `<a:lnSpc><a:spcPts val="${Math.round(p.lineHeightPx * 100)}"/></a:lnSpc>`;
+    let ppr = `<a:pPr algn="${ALIGN[p.align] || 'l'}"${p.bullet ? ` marL="${E(1.2 * 24)}" indent="${-E(1.2 * 24)}"` : TARGET === 'powerpoint' && p.marginLeft != null ? ` marL="${E(p.marginLeft)}"` : ''}>`;
+    if (p.lineHeightPx) ppr += `<a:lnSpc><a:spcPts val="${Math.round(p.lineHeightPx * SCALE * 100)}"/></a:lnSpc>`;
     else if (p.lineSpacing) ppr += `<a:lnSpc><a:spcPct val="${Math.round(p.lineSpacing * 100000)}"/></a:lnSpc>`;
-    if (p.spaceBefore) ppr += `<a:spcBef><a:spcPts val="${Math.round(p.spaceBefore * 100)}"/></a:spcBef>`;
+    if (p.spaceBefore) ppr += `<a:spcBef><a:spcPts val="${Math.round(p.spaceBefore * SCALE * 100)}"/></a:spcBef>`;
     ppr += p.bullet ? '<a:buChar char="•"/>' : '<a:buNone/>';
     ppr += '</a:pPr>';
     const runs = (p.runs || []).filter(r => r.text);
     if (!runs.length) {
-      const sz = Math.round(Math.max(1, ((p.runs || [])[0] || {}).size || 24) * 100);
+      const sz = Math.round(Math.max(1, ((p.runs || [])[0] || {}).size || 24) * SCALE * 100);
       paras += `<a:p>${ppr}<a:endParaRPr lang="en-US" sz="${sz}"/></a:p>`; return;
     }
     let body = '';
     for (const r of runs) {
       r.text.split('\v').forEach((piece, k) => {   // \v = a line break inside the paragraph (soft return)
-        const f = this.fonts.resolve(r.font, r.weight, r.italic, r.style);
-        const sz = Math.round(Math.max(1, Math.min(4000, r.size || 24)) * 100);
+        const f = this.fonts.resolve(r.font, r.weight, r.italic, r.style, r.fontVariations);
+        const sz = Math.round((TARGET === 'powerpoint' ? (r.size || 24) * SCALE : Math.max(1, Math.min(4000, r.size || 24))) * 100);
+        if (TARGET === 'powerpoint' && (sz < 100 || sz > 400000)) throw new Error('font size outside supported range; ask about physical slide size');
         let attrs = ` lang="en-US" sz="${sz}"`;
         if (f.italic) attrs += ' i="1"';                // match the face: Keynote obeys the flag over the name
-        else if (f.bold) attrs += ' b="1"';             // (only for fonts that aren't installed)
+        if (f.bold && (TARGET === 'powerpoint' || !f.italic)) attrs += ' b="1"';             // (only for fonts that aren't installed)
         if (r.underline) attrs += ' u="sng"';
-        if (r.letterSpacing) attrs += ` spc="${Math.round(r.letterSpacing * 100)}"`;
+        if (r.letterSpacing) attrs += ` spc="${Math.round(r.letterSpacing * SCALE * 100)}"`;
         const rpr = `<a:rPr${attrs}>${fillXml(r.color || '#000000', r.opacity)}<a:latin typeface="${esc(f.name)}"/><a:cs typeface="${esc(f.name)}"/>${r.link ? `<a:hlinkClick r:id="${this.rel('hyperlink', r.link, true)}"/>` : ''}</a:rPr>`;
         if (k) { body += `<a:br>${rpr}</a:br>`; pos += 1; }
         if (piece) {
           body += `<a:r>${rpr}<a:t>${esc(piece)}</a:t></a:r>`;
-          if (f.italic) ranges.push([pos + 1, pos + piece.length, f.name]);
+          if (TARGET === 'keynote' && f.italic) ranges.push([pos + 1, pos + piece.length, f.name]);
           pos += piece.length;
         }
       });
     }
     paras += `<a:p>${ppr}${body}</a:p>`;
   });
-  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(el.x, el.y, el.w, el.h || 1, el.rotation)}${prst('rect')}<a:noFill/>${effectsXml(el)}</p:spPr><p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${ANCHOR[el.valign] || 't'}" rtlCol="0"><a:noAutofit/></a:bodyPr><a:lstStyle/>${paras}</p:txBody></p:sp>`);
+  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(el.x, y, el.w, el.h || 1, el.rotation)}${prst('rect')}<a:noFill/>${effectsXml(el)}</p:spPr><p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${ANCHOR[el.valign] || 't'}" rtlCol="0"><a:noAutofit/></a:bodyPr><a:lstStyle/>${paras}</p:txBody></p:sp>`);
   this.textItems += 1;
   const first = ((el.paragraphs || [])[0] || {}).runs || [];
   if (ranges.length) this.fix.push({ item: this.textItems, ranges, text: first.map(r => r.text || '').join('').slice(0, 24).replace(/\v/g, ' ') });
@@ -246,6 +307,22 @@ function run(argv) {
   const fontMap = Object.assign({}, spec.fontMap || {}, JSON.parse(argOpt(argv, '--font-map', '{}')));
   const fonts = new Fonts(spec, fontMap);
   const W = spec.width || 1920, H = spec.height || 1080;
+  TARGET = argOpt(argv, '--target', 'keynote');
+  if (!['keynote', 'powerpoint'].includes(TARGET)) throw new Error('unknown target');
+  SCALE = 1; PT = 12700;
+  if (TARGET === 'powerpoint') {
+    const inches = Number(argOpt(argv, '--width-in', spec.physicalSize?.widthIn ?? NaN));
+    if (!Number.isFinite(inches) || inches < 1 || inches > 56 || inches * H / W < 1 || inches * H / W > 56)
+      throw new Error('confirm --width-in; both slide dimensions must be 1–56 inches');
+    if (spec.physicalSize && (Math.abs(inches - spec.physicalSize.widthIn) > 0.00001) && !argv.includes('--resize-approved')) throw new Error('source page size would change; ask before resizing');
+    if (spec.physicalSize && Math.abs(spec.physicalSize.heightIn / spec.physicalSize.widthIn - H / W) > 2 / W) throw new Error('source physical size and extracted aspect disagree');
+    SCALE = inches * 72 / W; PT *= SCALE;
+    if (exists(out)) throw new Error('output already exists; choose a new file name');
+    const pending = spec.conversion || {};
+    if (!argv.includes('--draft') && ['unresolved_artwork', 'missing_images', 'missing_rasters', 'missing_slides', 'source_errors'].some(k => (pending[k] || []).length))
+      throw new Error('unresolved source content; use --draft only for reconstruction review');
+  }
+
   const tmp = out + '.parts'; rmrf(tmp);
   shOK(`/bin/cp -R ${q(join(HERE, 'pptx-template'))} ${q(tmp)}`); rmrf(join(tmp, 'README.md'));
   const pkg = { tmp, media: 0, exts: new Set() };
@@ -289,6 +366,9 @@ function run(argv) {
   rmrf(tmp);
   const fixPath = out + '.fixups.json';
   if (fix.length) writeJSON(fixPath, { fonts: fix }); else rmrf(fixPath);
+  counts.target = TARGET; counts.scale_points_per_pixel = SCALE; counts.unresolved_font_styles = fonts.unresolved;
+  counts.unresolved_font_variations = fonts.variations;
+  counts.incomplete = counts.skipped.length > 0 || fonts.unresolved.length > 0 || fonts.variations.length > 0;
   counts.out = out; counts.fonts_not_installed = fonts.missing; counts.italic_fixups = fix.reduce((a, f) => a + f.ranges.length, 0);
   return JSON.stringify(counts, null, 1);
 }

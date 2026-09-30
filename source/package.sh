@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 sh sync-shared.sh >/dev/null
 OUT=../skills
 rm -rf "$OUT" && mkdir -p "$OUT"
-for skill in google-slides-to-figma google-slides-to-keynote figma-to-keynote; do
+for skill in google-slides-to-figma google-slides-to-keynote figma-to-keynote google-slides-to-powerpoint figma-to-powerpoint; do
   zip -qr -X "$OUT/$skill.zip" "$skill" -x '*/__pycache__/*' '*.pyc' '*/.DS_Store'
   echo "skills/$skill.zip  ($(du -h "$OUT/$skill.zip" | cut -f1))"
 done

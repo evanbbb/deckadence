@@ -26,12 +26,13 @@ function text() {
     segs: [{ s: 'Keep me editable', f: 'Helvetica', st: 'Regular', sz: 24 }] };
 }
 test('gradient backgrounds retain their stops and editable foreground text', async () => {
-  const child = node('1:9', 'TEXT', { getStyledTextSegments: () => [{ characters: 'Keep me editable', fontName: { family: 'Helvetica', style: 'Regular' },
+  const child = node('1:9', 'TEXT', { getStyledTextSegments: () => [{ characters: 'Keep me editable', fontName: { family: 'Helvetica', style: 'Regular', variationSettings: {wght:400,opsz:14} },
     fontSize: 24, fills: [solid], textDecoration: 'NONE', lineHeight: { unit: 'AUTO' }, letterSpacing: { unit: 'PIXELS', value: 0 }, textCase: 'ORIGINAL' }] });
   const output = await read(node('1:1', 'FRAME', { fills: [paint], children: [child] }));
   assert.equal(output.frames[0].els[0].k, 'gradient');
   assert.deepEqual(output.frames[0].els[0].paint.gradientStops, paint.gradientStops);
   assert.equal(output.frames[0].els[1].k, 'text');
+  assert.deepEqual(output.frames[0].els[1].segs[0].axes, {wght:400,opsz:14});
   assert.equal(output.warnings.length, 0);
 });
 test('complex background is flagged without replacing it with a solid colour or flattening its text', async () => {
@@ -130,27 +131,39 @@ test('Full HD comparison flags a small local defect and checks the final pixels'
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
 });
 
+test('Google native paths preserve Bezier curves, relative coordinates and shorthand controls',()=>{
+  const source=fs.readFileSync(path.join(root,'shared/google-slides/extract_deck_inpage.js'),'utf8');
+  const fn=source.match(/  function exactPath\(d, m, toSlide\) \{[\s\S]*?\n  \}/)[0];
+  const convert=new Function(fn+'\nreturn exactPath;')();
+  const m={a:2,b:0,c:0,d:3,e:10,f:20}, toSlide=(x,y)=>({x,y});
+  assert.equal(convert('m1 2 c1 2 3 4 5 6 s7 8 9 10 q1 2 3 4 t5 6 h2 v3 z',m,toSlide),
+    'M 12 26 C 14 32 18 38 22 44 C 26 50 36 68 40 74 Q 42 80 46 86 Q 50 92 56 104 L 60 104 L 60 113 Z');
+  assert.equal(convert('M1e1 -2e0 L20 30',m,toSlide),'M 30 14 L 50 110');
+  assert.equal(convert('M0 0 A10 20 0 0 1 30 40',m,toSlide),null);
+  assert.equal(convert('M0 0 C1 2',m,toSlide),null);
+});
 test('Google reference export renders the vector source at Full HD and embeds external images', async () => {
   const source = fs.readFileSync(path.join(root, 'shared/google-slides/extract_deck_inpage.js'), 'utf8');
   const fn = source.match(/  async function referenceImage\(pid, n\) \{[\s\S]*?\n  \}/)[0];
   const X = { warnings: [] }, image = { attributes: { href: 'https://example.com/image.png' },
     getAttribute(name) { return this.attributes[name]; }, getAttributeNS() { return null; }, setAttribute(name, value) { this.attributes[name] = value; }, setAttributeNS(ns, name, value) { this.attributes[name] = value; } };
   const doc = { documentElement: { localName: 'svg' }, querySelector: () => null, querySelectorAll: () => [image] };
-  let drawn, closed = false;
+  let drawn, closed = false, embeddedSvg;
   const document = { fonts: { ready: Promise.resolve() }, createElement: () => {
     const canvas = { getContext: () => ({ drawImage(...args) { drawn = args.slice(1); } }), toBlob(cb) { cb(new Blob(['rendered PNG'])); } }; return canvas;
   } };
-  class URLMock extends URL { static createObjectURL() { return 'blob:reference'; } static revokeObjectURL() { closed = true; } }
-  class ImageMock { naturalWidth = 960; naturalHeight = 540; set src(value) { queueMicrotask(() => this.onload()); } }
+  class URLMock extends URL { static createObjectURL(blob) { embeddedSvg = blob; return 'blob:reference'; } static revokeObjectURL() { closed = true; } }
+  class ImageMock { naturalWidth = 960; naturalHeight = 539.5; set src(value) { queueMicrotask(() => this.onload()); } }
   class FileReaderMock { readAsDataURL(blob) { assert.ok(blob instanceof Blob); this.result = 'data:image/png;base64,aW1hZ2U='; queueMicrotask(() => this.onload()); } }
   const names = ['opts', 'deckId', 'X', 'fetch', 'DOMParser', 'FileReader', 'document', 'URL', 'XMLSerializer', 'Image', 'Blob', 'createImageBitmap'];
   const run = new AsyncFunction(...names, fn + '\nreturn referenceImage("slide1", 1);');
-  const result = await run({ refWidth: 1920 }, 'deck1', X,
-    async url => ({ ok: true, url: new URL(String(url), 'https://docs.google.com').href, text: async () => '<svg/>', blob: async () => new Blob(['image']) }),
-    class { parseFromString() { return doc; } }, FileReaderMock, document, URLMock,
+  const result = await run({ refWidth: 1920,sourceSize:{widthIn:20,heightIn:11.25} }, 'deck1', X,
+    async url => ({ ok: true, url: new URL(String(url), 'https://docs.google.com').href, text: async () => '<svg><image xlink:href="https://example.com/image.png?x=1&amp;y=2"/></svg>', blob: async () => new Blob(['image']) }),
+    class { parseFromString() { throw new Error('TrustedHTML assignment required'); } }, FileReaderMock, document, URLMock,
     class { serializeToString() { assert.match(image.attributes.href, /^data:/); return '<svg/>'; } }, ImageMock, Blob,
     () => { throw new Error('Should not use bitmap fallback'); });
   assert.ok(result instanceof Blob);
+  assert.match(await embeddedSvg.text(), /xlink:href="data:image\/png;base64,aW1hZ2U="/);
   assert.deepEqual(drawn, [0, 0, 1920, 1080]);
   assert.equal(closed, true);
   assert.deepEqual(X.warnings, []);
