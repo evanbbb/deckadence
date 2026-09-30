@@ -56,6 +56,43 @@ function fillXml(color, opacity) {
   const a = opacity != null && opacity < 0.999 ? `<a:alpha val="${Math.round(opacity * 100000)}"/>` : '';
   return `<a:solidFill><a:srgbClr val="${h}">${a}</a:srgbClr></a:solidFill>`;
 }
+// Figma's linear transform maps normalized shape coordinates to gradient space.
+// Remap stops to the projection across the box so offset/short gradients keep their placement.
+function gradientXml(el) {
+  const g = el.gradient, [[a, c, tx]] = g.transform;
+  const lo = tx + Math.min(0, a) + Math.min(0, c), hi = tx + Math.max(0, a) + Math.max(0, c);
+  if (!Number.isFinite(lo + hi) || hi <= lo) throw new Error('invalid linear gradient transform');
+  const stops = g.stops.slice().sort((x, y) => x.position - y.position);
+  if (!stops.length) throw new Error('gradient has no stops');
+  function at(t) {
+    if (t <= stops[0].position) return stops[0].color;
+    for (let i = 1; i < stops.length; i++) if (t <= stops[i].position) {
+      const x = stops[i - 1], y = stops[i], f = (t - x.position) / (y.position - x.position);
+      return { r: x.color.r + (y.color.r - x.color.r) * f, g: x.color.g + (y.color.g - x.color.g) * f,
+        b: x.color.b + (y.color.b - x.color.b) * f, a: (x.color.a ?? 1) + ((y.color.a ?? 1) - (x.color.a ?? 1)) * f };
+    }
+    return stops[stops.length - 1].color;
+  }
+  const mapped = [{ position: lo, color: at(lo) }, ...stops.filter(s => s.position > lo && s.position < hi), { position: hi, color: at(hi) }];
+  const gs = mapped.map(s => {
+    const color = '#' + [s.color.r, s.color.g, s.color.b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+    return `<a:gs pos="${Math.round((s.position - lo) / (hi - lo) * 100000)}">` +
+      fillXml(color, (s.color.a ?? 1) * (g.opacity ?? 1)).replace('<a:solidFill>', '').replace('</a:solidFill>', '') + '</a:gs>';
+  }).join('');
+  const angle = ((Math.atan2(c / el.h, a / el.w) * 180 / Math.PI + 360) % 360) * 60000;
+  return `<a:gradFill rotWithShape="1"><a:gsLst>${gs}</a:gsLst><a:lin ang="${Math.round(angle)}" scaled="0"/></a:gradFill>`;
+}
+function effectsXml(el) {
+  const shadows = el.shadows || [];
+  return '<a:effectLst>' + shadows.map(s => {
+    if (!['inner', 'outer'].includes(s.type)) throw new Error('unsupported shadow');
+    const tag = s.type === 'inner' ? 'innerShdw' : 'outerShdw';
+    const angle = ((Math.atan2(s.y || 0, s.x || 0) * 180 / Math.PI + 360) % 360) * 60000;
+    const attrs = s.type === 'outer' ? ' algn="ctr" rotWithShape="0"' : '';
+    return `<a:${tag} blurRad="${E(s.blur || 0)}" dist="${E(Math.hypot(s.x || 0, s.y || 0))}" dir="${Math.round(angle)}"${attrs}>` +
+      fillXml(s.color, s.opacity).replace('<a:solidFill>', '').replace('</a:solidFill>', '') + `</a:${tag}>`;
+  }).join('') + '</a:effectLst>';
+}
 function lineXml(el) {
   return el.stroke && el.strokeWidth ? `<a:ln w="${E(el.strokeWidth)}">${fillXml(el.stroke)}</a:ln>` : '<a:ln><a:noFill/></a:ln>';
 }
@@ -103,14 +140,14 @@ Slide.prototype.rel = function (type, target, external) {
 Slide.prototype.box = function (el) {
   const id = this.nextId(), ell = el.type === 'ellipse', r = el.radius || 0;
   const geom = ell ? prst('ellipse') : r ? prst('roundRect', Math.min(50000, r / Math.max(1, Math.min(el.w, el.h)) * 100000)) : prst('rect');
-  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Shape ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(el.x, el.y, el.w, el.h, el.rotation)}${geom}${el.fill ? fillXml(el.fill, el.fillOpacity) : '<a:noFill/>'}${lineXml(el)}<a:effectLst/></p:spPr></p:sp>`);
+  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Shape ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(el.x, el.y, el.w, el.h, el.rotation)}${geom}${el.gradient ? gradientXml(el) : el.fill ? fillXml(el.fill, el.fillOpacity) : '<a:noFill/>'}${lineXml(el)}${effectsXml(el)}</p:spPr></p:sp>`);
 };
 Slide.prototype.path = function (el) {
   const segs = parsePath(el.d), pts = segs.flatMap(s => s[1]);
   if (!pts.length) throw new Error('empty path');
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), x0 = Math.min(...xs), y0 = Math.min(...ys);
   const w = Math.max(0.5, Math.max(...xs) - x0), h = Math.max(0.5, Math.max(...ys) - y0), id = this.nextId();
-  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Shape ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(x0, y0, w, h)}${custGeom(segs, [x0, y0, w, h])}${el.fill ? fillXml(el.fill, el.fillOpacity) : '<a:noFill/>'}${lineXml(el)}<a:effectLst/></p:spPr></p:sp>`);
+  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Shape ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(x0, y0, w, h)}${custGeom(segs, [x0, y0, w, h])}${el.fill ? fillXml(el.fill, el.fillOpacity) : '<a:noFill/>'}${lineXml(el)}${effectsXml(el)}</p:spPr></p:sp>`);
 };
 Slide.prototype.line = function (el) {
   const id = this.nextId(), x = Math.min(el.x1, el.x2), y = Math.min(el.y1, el.y2);
@@ -149,7 +186,7 @@ Slide.prototype.image = function (el, base) {
   if (mask === 'ellipse') geom = prst('ellipse');
   else if (mask && mask.roundRect != null) geom = prst('roundRect', Math.min(50000, mask.roundRect / Math.max(1, Math.min(el.w, el.h)) * 100000));
   else if (mask && mask.path) geom = custGeom(parsePath(mask.path), [el.x, el.y, el.w, el.h]);
-  this.xml.push(`<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Picture ${id}" descr="${esc(basename(el.file))}">${link}</p:cNvPr><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}">${alpha}</a:blip>${src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${xfrm(el.x, el.y, el.w, el.h, el.rotation, flipH, flipV)}${geom}</p:spPr></p:pic>`);
+  this.xml.push(`<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Picture ${id}" descr="${esc(basename(el.file))}">${link}</p:cNvPr><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}">${alpha}</a:blip>${src_rect}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${xfrm(el.x, el.y, el.w, el.h, el.rotation, flipH, flipV)}${geom}${effectsXml(el)}</p:spPr></p:pic>`);
 };
 var ALIGN = { left: 'l', center: 'ctr', right: 'r', justify: 'just' }, ANCHOR = { top: 't', middle: 'ctr', bottom: 'b' };
 Slide.prototype.text = function (el) {
@@ -189,7 +226,7 @@ Slide.prototype.text = function (el) {
     }
     paras += `<a:p>${ppr}${body}</a:p>`;
   });
-  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(el.x, el.y, el.w, el.h || 1, el.rotation)}${prst('rect')}<a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${ANCHOR[el.valign] || 't'}" rtlCol="0"><a:noAutofit/></a:bodyPr><a:lstStyle/>${paras}</p:txBody></p:sp>`);
+  this.xml.push(`<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm(el.x, el.y, el.w, el.h || 1, el.rotation)}${prst('rect')}<a:noFill/>${effectsXml(el)}</p:spPr><p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${ANCHOR[el.valign] || 't'}" rtlCol="0"><a:noAutofit/></a:bodyPr><a:lstStyle/>${paras}</p:txBody></p:sp>`);
   this.textItems += 1;
   const first = ((el.paragraphs || [])[0] || {}).runs || [];
   if (ranges.length) this.fix.push({ item: this.textItems, ranges, text: first.map(r => r.text || '').join('').slice(0, 24).replace(/\v/g, ' ') });

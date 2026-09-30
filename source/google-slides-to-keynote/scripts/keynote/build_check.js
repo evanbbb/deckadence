@@ -33,7 +33,11 @@ function run(argv) {
     if (moved.moved) { step('build_pptx.js', [spec, pptx, ...fm]); conv = step('to_keynote.js', [pptx, out, ...app]); }
   }
   const report = step('compare.js', [spec, pngs]);
+  const conversion = readJSON(spec).conversion || {};
   return JSON.stringify({ key: out, slides: conv.slides, movies: conv.movies, fonts_fixed: conv.fonts_fixed, skipped_elements: built.skipped,
+    unresolved_artwork: conversion.unresolved_artwork || [], flattened_artwork: conversion.flattened_artwork || [],
+    incomplete: !!((conversion.unresolved_artwork || []).length || (conversion.missing_images || []).length || (conversion.missing_rasters || []).length || built.skipped.length),
     fonts_not_installed: built.fonts_not_installed, text_boxes_lined_up: moved.moved, flagged: report.flagged, fonts_missing: report.fonts_missing,
-    flagged_sheet: report.flagged_sheet, worst_slides: report.worst_slides, compare_dir: join(dirname(pngs), 'compare') }, null, 1);
+    flagged_sheet: report.flagged_sheet, worst_slides: report.worst_slides, low_resolution_slides: report.low_resolution_slides,
+    comparison_resolution: report.comparison_resolution, compare_dir: join(dirname(pngs), 'compare') }, null, 1);
 }

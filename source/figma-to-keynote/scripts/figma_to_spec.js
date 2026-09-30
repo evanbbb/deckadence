@@ -1,15 +1,15 @@
 // Turn what read_figma_frames.js returned into a deck spec for the Keynote builder.
 //
-//   osascript -l JavaScript figma_to_spec.js <work-dir> [--title "Deck name"] [--font-map '{"Inter Tight":"Inter"}']
+//   osascript -l JavaScript figma_to_spec.js <work-dir> [--title "Deck name"] [--font-map JSON] [--approved-rasters '1:2,1:3']
 //
 // <work-dir> must contain:
 //   frames-01.json …  the reader's results, one file per call, saved exactly as returned ({frames, warnings}); read in
 //                     name order, so number them in slide order (a single frames.json with a list also works)
 //   images/           every raw image from download_assets, any names: matched to Figma's image hashes by SHA-1
 //   ref/              Figma's picture of each slide frame (download_assets `export`), named by frame id with ':' as '-'
-//   raster/           only for the node ids this script lists as `missing_rasters` (gradient boxes with layers on top),
-//                     named the same way. Everything else that must become a picture is cut out of the slide picture.
-//                     Run once to get the list, download those, run again.
+//   rebuilds.json     optional {"node-id": [deck-spec elements]} for editable reconstruction attempts
+//   raster/           approved isolated layer exports, named by id; backgrounds use <id>-background.png
+//                     No complex artwork is flattened until its id is explicitly approved after a failed rebuild.
 // Writes <work-dir>/deck-spec.json (and media/ for cut-outs) and prints a summary: slides, images, pictures, what's
 // still missing, fonts (family, styles, slides, installed?) and the reader's warnings. Uses only macOS.
 ObjC.import('Foundation');
@@ -99,23 +99,54 @@ function textElement(el, fonts, n) {
 function run(argv) {
   if (!argv.length) return 'usage: osascript -l JavaScript figma_to_spec.js <work-dir> [--title NAME] [--font-map JSON]';
   const work = abspath(argv[0]), title = argOpt(argv, '--title', 'Figma slides'), fontMap = JSON.parse(argOpt(argv, '--font-map', '{}'));
+  const approved = new Set(argOpt(argv, '--approved-rasters', '').split(',').map(s => s.trim()).filter(Boolean));
+  const rebuildsPath = join(work, 'rebuilds.json'), rebuilds = exists(rebuildsPath) ? readJSON(rebuildsPath) : {};
+  const rasterBoundsPath = join(work, 'raster-bounds.json'), rasterBounds = exists(rasterBoundsPath) ? readJSON(rasterBoundsPath) : {};
   const calls = [];
   for (const f of listDir(work).filter(f => /^frames.*\.json$/.test(f)).sort()) { const d = readJSON(join(work, f)); calls.push(...(Array.isArray(d) ? d : [d])); }
   const frames = calls.flatMap(c => c.frames || []), warnings = calls.flatMap(c => c.warnings || []);
   const byHash = {};
   for (const f of listDir(join(work, 'images'))) { const p = join(work, 'images', f); if (!isDir(p)) byHash[sha1(p)] = p; }
-  const fonts = {}, slides = [], missingImages = new Set(), missingRasters = [];
+  const fonts = {}, slides = [], missingImages = new Set(), missingRasters = [], pendingArtwork = [], flattenedArtwork = [], nativeArtwork = [];
   let nImg = 0, nCut = 0, nOwn = 0;
   frames.forEach((fr, idx) => {
     const n = idx + 1, els = [], refp = join(work, 'ref', fid(fr.id) + '.png');
     let refInfo = null;
-    fr.els.forEach((el, k) => {
-      if (el.k === 'box') {
+    const rebuilt = new Set(), rasterized = new Set(), shadowed = new Set();
+    fr.els.forEach((original, k) => {
+      let el = original;
+      // Native gradient/shadow candidates can also be replaced after their visual check fails.
+      const key = el.background ? el.id + ':background' : el.id;
+      if (key && rebuilds[key] && !approved.has(key)) {
+        if (!rebuilt.has(key)) {
+          if (!Array.isArray(rebuilds[key]) || !rebuilds[key].length) throw new Error('rebuild must contain elements: ' + key);
+          els.push(...rebuilds[key].map(e => Object.assign({}, e, { src: 'editable rebuild ' + key })));
+          rebuilt.add(key);
+        }
+        return;
+      }
+      if (key && approved.has(key)) {
+        if (rasterized.has(key)) return;
+        // All elements belonging to this node are replaced together, never painted twice.
+        const parts = fr.els.filter(e => (e.background ? e.id + ':background' : e.id) === key);
+        const boxes = parts.map(e => e.render ? [e.render.x, e.render.y, e.render.w, e.render.h] : e.k === 'path' ? pathBox(e.d) : [e.x, e.y, e.w, e.h]).filter(Boolean);
+        const x = Math.min(...boxes.map(b => b[0])), y = Math.min(...boxes.map(b => b[1]));
+        const w = Math.max(...boxes.map(b => b[0] + b[2])) - x, h = Math.max(...boxes.map(b => b[1] + b[3])) - y;
+        el = { k: 'raster', id: el.id, background: el.background, x, y, w, h, clip: el.clip,
+          why: el.why || (el.gradient || el.paint ? 'gradient rebuild failed' : 'editable rebuild failed'), from: el.from };
+        rasterized.add(key);
+      }
+      const before = els.length;
+      if (el.k === 'box' || el.k === 'gradient') {
         let box = [el.x, el.y, el.w, el.h];
         if (el.clip && !el.rot) { box = intersect(box, el.clip); if (!box) return; }
         const e = { type: el.shape === 'ellipse' ? 'ellipse' : 'rect', x: box[0], y: box[1], w: box[2], h: box[3], fill: el.fill, fillOpacity: el.fo == null ? 1 : el.fo,
           stroke: el.stroke, strokeWidth: el.sw || 0, radius: el.r || 0 };
         if (el.rot) e.rotation = el.rot;
+        if (el.k === 'gradient') {
+          e.gradient = { transform: el.paint.gradientTransform, stops: el.paint.gradientStops, opacity: (el.paint.opacity ?? 1) * (el.fo ?? 1) };
+          nativeArtwork.push({ id: key, slide: n, reason: 'linear gradient', check_required: true });
+        }
         els.push(e);
       } else if (el.k === 'path') {
         els.push({ type: 'path', d: el.d, fill: el.fill, fillOpacity: el.fo == null ? 1 : el.fo });
@@ -123,15 +154,19 @@ function run(argv) {
         const src = byHash[el.hash]; if (!src) { missingImages.add(el.hash); return; }
         const e = imageElement(el, src, imageSize(src), relpath(src, work)); if (e) { els.push(e); nImg++; }
       } else if (el.k === 'raster') {
+        if (!approved.has(key)) {
+          pendingArtwork.push({ id: key, slide: n, reason: el.why, x: el.x, y: el.y, w: el.w, h: el.h, source: el.source });
+          return;
+        }
         const box = intersect([el.x, el.y, el.w, el.h], el.clip || [0, 0, fr.w, fr.h]); if (!box) return;
-        // Default: cut the area out of Figma's picture of the slide: exactly what shows (filters, blurs, blend modes,
-        // stacked fills, transparency). Layers over it get baked in too, but they're rebuilt on top as real objects.
-        // Figma's export of one layer is flattened on white, so it only helps for a gradient box with layers on top.
+        // Only approved fallbacks reach this branch. Prefer isolated exports; backdrop-dependent effects
+        // can require a source crop. Such crops may bake overlapping text in and must be disclosed.
+        // A background always requires an isolated export, never a whole-slide crop.
         const later = fr.els.slice(k + 1).filter(o => (o.k === 'path' ? intersect(box, pathBox(o.d) || [0, 0, 0, 0]) : o.x != null && intersect(box, [o.x, o.y, o.w, o.h])));
-        const own = join(work, 'raster', fid(el.id) + '.png');
-        if (later.length && el.why === 'gradient') {
-          if (!exists(own)) { missingRasters.push(el.id); return; }
-          const rb = [el.x, el.y, el.w, el.h];
+        const own = join(work, 'raster', fid(el.id) + (el.background ? '-background' : '') + '.png');
+        if (el.background || (exists(own) && el.from !== 'ref') || (later.length && el.why === 'gradient')) {
+          if (!exists(own)) { missingRasters.push(key); return; }
+          const rb = rasterBounds[key] || [el.x, el.y, el.w, el.h];
           let rel = relpath(own, work);
           if (box.join() !== rb.join()) {
             const sz = imageSize(own), sx = sz.w / rb[2], sy = sz.h / rb[3];
@@ -147,17 +182,30 @@ function run(argv) {
           els.push({ type: 'image', file: rel, x: box[0], y: box[1], w: box[2], h: box[3], src: `raster ${el.id} (${el.why}, cut from slide picture)` }); nCut++;
           if (later.some(o => o.k === 'text')) warnings.push(`slide ${n}: ${el.id} (${el.why}) is cut from the slide picture with text over it: if that text is moved later, a copy stays in the picture`);
         }
+        flattenedArtwork.push({ id: key, slide: n, reason: el.why, background: !!el.background });
       } else if (el.k === 'text') {
         els.push(textElement(el, fonts, n));
       }
+      if (el.shadows && !shadowed.has(key) && els.length > before) {
+        els[before].shadows = el.shadows; shadowed.add(key);
+        nativeArtwork.push({ id: key, slide: n, reason: 'shadow', check_required: true });
+      }
+      for (let i = before; i < els.length; i++) els[i].sourceId = key;
     });
+    for (const e of els) if (e.type === 'text') for (const p of e.paragraphs || []) for (const r of p.runs || []) if (r.font) {
+      const f = fonts[r.font] || (fonts[r.font] = { styles: new Set(), slides: new Set() });
+      f.styles.add(r.style); f.slides.add(n);
+    }
     slides.push({ n, figma: fr.id, name: fr.name, background: fr.bg || '#FFFFFF', ref: exists(refp) ? relpath(refp, work) : null, elements: els });
   });
-  const W = Math.max(1920, ...frames.map(f => f.w)) === 1920 ? 1920 : Math.round(Math.max(...frames.map(f => f.w)));
+  const W = frames.length ? Math.round(Math.max(...frames.map(f => f.w))) : 1920;
   const H = frames.length ? Math.round(Math.max(...frames.map(f => f.h))) : 1080;
-  writeJSON(join(work, 'deck-spec.json'), { title, width: W, height: H, fontMap, slides });
+  writeJSON(join(work, 'deck-spec.json'), { title, width: W, height: H, fontMap, slides,
+    conversion: { unresolved_artwork: pendingArtwork, missing_images: [...missingImages], missing_rasters: missingRasters, flattened_artwork: flattenedArtwork } });
   return JSON.stringify({ slides: slides.length, images: nImg, pictures_cut_from_slide: nCut, pictures_own_export: nOwn,
     missing_images: [...missingImages], missing_rasters: missingRasters, no_ref: slides.filter(s => !s.ref).map(s => s.figma),
+    artwork_needing_rebuild: pendingArtwork, native_artwork_to_check: nativeArtwork, flattened_artwork: flattenedArtwork,
+    incomplete: !!(pendingArtwork.length || missingImages.size || missingRasters.length),
     fonts: Object.entries(fonts).sort((a, b) => b[1].slides.size - a[1].slides.size).map(([fam, f]) => Object.assign(
       { family: fam, styles: [...f.styles].filter(Boolean).sort(), slides: f.slides.size }, fontMap[fam] ? { replaced_by: fontMap[fam] } : {},
       { installed: fontFaces(fontMap[fam] || fam).length > 0 })),

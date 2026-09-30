@@ -20,5 +20,5 @@ Keynote-side lessons (importing, fonts, italics, text placement, checking) are i
 - Curved or irregular shapes (rounded boxes, arrows) are traced into outlines; plain rectangles stay boxes.
 
 **Checking against Google's picture**
-- The comparison picture is Google's server render (`/export/png`), which sometimes wraps a line differently from the editor (slide 43 of the test deck: "of a" / "great evening" in the export, "of a great" in the editor). Keynote follows the editor. If a flagged slide differs only by one word moving between lines, that's this, not a bug.
+- The comparison picture uses Google's SVG export rendered at 1920 pixels across, with a server PNG fallback if SVG rendering fails. Low-resolution fallbacks are warned about. The server export, which sometimes wraps a line differently from the editor (slide 43 of the test deck: "of a" / "great evening" in the export, "of a great" in the editor). Keynote follows the editor. If a flagged slide differs only by one word moving between lines, that's this, not a bug.
 - A centred two-line title can come out with slightly more space between its lines. Known limit.

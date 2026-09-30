@@ -15,7 +15,7 @@ Keynote-side lessons (importing, fonts, italics, text placement, checking) are i
 **Images**
 - `download_assets` gives the original images without saying which layer uses which. Figma's image hash is the SHA-1 of the file, so match by hashing. `rawImages` is capped at 20 per call.
 - Image fills: `FILL` = cover the box, `FIT` = contain, `CROP` = `imageTransform` gives the visible part of the image in 0–1 image coordinates. `TILE`, rotated image fills and image filters can't be expressed in Keynote.
-- **Figma's export of a single layer is flattened on white** (no transparency, for images with filters, stacked fills, mirrored images, blurs…). Exported on its own, a head on a grey box came out on a white square. So layers that must become pictures are cut out of Figma's picture of the whole slide instead: exactly what shows, blend modes and transparency included, and no extra downloads. Only a gradient box with layers on top uses its own export (it's a solid rectangle, and the text on it stays out of the picture).
+- **Some MCP exports of a single layer is flattened on white** (no transparency, for images with filters, stacked fills, mirrored images, blurs…). Exported on its own, a head on a grey box came out on a white square. Verify transparency before using an isolated export. For an approved backdrop-dependent effect, a crop from the whole slide can preserve what shows; disclose any baked-in text and obtain approval for that additional limitation. Do not use full-frame renders as background artwork.
 - A picture cut from the slide can have text baked in when text sits on top of it. The text is still rebuilt as real text on top, so it looks right, but moving that text later leaves a copy behind. The converter warns about each one.
 
 **Fonts**
@@ -24,5 +24,8 @@ Keynote-side lessons (importing, fonts, italics, text placement, checking) are i
 
 **Frames**
 - Figma has no slide order: ask (rows top to bottom, then left to right, is the default).
-- A frame background that's a gradient becomes its first colour (warning in the summary).
-- Shadows are left out (warning per layer).
+- Linear gradient backgrounds are attempted as editable DrawingML fills with the source transform, stops and alpha. Radial, angular, diamond, patterned and filtered backgrounds are flagged for an editable reconstruction; they are never replaced by a single colour.
+- Simple drop and inner shadows are attempted as editable effects. Multiple shadows, spread, special blend modes and group shadows require reconstruction. Always check Keynote’s import: native shadow blur can differ from Figma.
+- Flattening requires a failed editable attempt and approval for the specific id. `rebuilds.json` supplies alternate editable elements; `--approved-rasters` opts only approved ids into raster fallback. `incomplete: true` means there is still work to do.
+- An approved background is exported from a temporary rectangle with the original frame’s fills and no children, then that rectangle is removed. Existing source nodes are never changed. The resulting background image contains no slide text.
+- Reference images and individual comparison panels should be at least 1920 pixels across. Contact sheets are navigation aids; inspect the full-resolution panels. Low-resolution source/output images are reported explicitly.

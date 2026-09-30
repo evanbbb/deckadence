@@ -1,6 +1,6 @@
 // Check the Keynote result against the source, slide by slide.
 //
-//   osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out <dir>] [--flag 12]
+//   osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out <dir>] [--flag 12] [--width 1920]
 //
 // For every slide with a `ref` picture in the spec, compares it with Keynote's export of the same slide (the i-th spec
 // slide is Keynote's sNN.png, NN = i) and writes:
@@ -8,13 +8,15 @@
 //   <out>/flagged.png   every flagged slide on one sheet (source above, Keynote below)
 //   <out>/report.json   per slide: scores, object counts, fonts Keynote used; flagged slides first
 // Scores are the colour difference after a light blur, as a percentage (0 = identical):
-//   score - the whole slide on average;   worst - the worst patch of a 12 x 8 grid (slides are flagged on this one:
+//   score - the whole slide on average;   worst - the worst patch of a 48 x 27 grid (slides are flagged on this one:
 //   a re-wrapped line barely moves the average but lights up its patch).
 // It's a pointer, not a verdict: look at the side-by-side pictures of flagged slides, and spot-check others.
 ObjC.import('Foundation');
 (0, eval)($.NSString.stringWithContentsOfFileEncodingError(ObjC.unwrap($.NSProcessInfo.processInfo.arguments).map(ObjC.unwrap).find(a => /\.js$/.test(a)).replace(/[^/]*$/, 'lib.js'), $.NSUTF8StringEncoding, null).js);
 
-var W = 640, H = 360;
+// Full HD by default, keeping the deck's aspect ratio. Contact sheets remain small;
+// individual comparisons retain enough detail to inspect small text and thin strokes.
+var W = 1920, H = 1080;
 function blur(px) {  // two passes of a 3 x 3 box blur per channel ≈ a light Gaussian
   let a = px.rgb;
   for (let pass = 0; pass < 2; pass++) {
@@ -35,11 +37,13 @@ function diffMap(r, k) {
 }
 function stats(d) {
   let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i];
-  const cols = 12, rows = 8, pw = Math.floor(W / cols), ph = Math.floor(H / rows);
+  const cols = Math.min(48, W), rows = Math.min(27, H);
   let worst = 0;
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
-    let s = 0; for (let y = j * ph; y < (j + 1) * ph; y++) for (let x = i * pw; x < (i + 1) * pw; x++) s += d[y * W + x];
-    worst = Math.max(worst, s / (pw * ph) / 255 * 100);
+    const x1 = Math.floor(i * W / cols), x2 = Math.floor((i + 1) * W / cols);
+    const y1 = Math.floor(j * H / rows), y2 = Math.floor((j + 1) * H / rows);
+    let s = 0; for (let y = y1; y < y2; y++) for (let x = x1; x < x2; x++) s += d[y * W + x];
+    worst = Math.max(worst, s / ((x2 - x1) * (y2 - y1)) / 255 * 100);
   }
   return { score: sum / d.length / 255 * 100, worst };
 }
@@ -48,10 +52,13 @@ function paste(dst, dw, src, sw, sh, ox, oy) {
 }
 
 function run(argv) {
-  if (argv.length < 2) return 'usage: osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out DIR] [--flag 12]';
+  if (argv.length < 2) return 'usage: osascript -l JavaScript compare.js <deck-spec.json> <keynote-png-dir> [--out DIR] [--flag 12] [--width 1920]';
   const specPath = abspath(argv[0]), kdir = abspath(argv[1]), base = dirname(specPath);
   const out = abspath(argOpt(argv, '--out', join(dirname(kdir), 'compare'))), flag = +argOpt(argv, '--flag', 12);
   const spec = readJSON(specPath);
+  W = +argOpt(argv, '--width', 1920);
+  if (!Number.isInteger(W) || W < 48 || W > 7680) throw new Error('--width must be an integer from 48 to 7680');
+  H = Math.max(27, Math.round(W * (spec.height || 1080) / (spec.width || 1920)));
   const objsPath = join(dirname(kdir), 'keynote-objects.json'), objs = exists(objsPath) ? readJSON(objsPath) : {};
   mkdirp(out);
   const rows = [], pairs = [];
@@ -62,6 +69,9 @@ function run(argv) {
       keynote_fonts: [...new Set(ko.map(o => o.font).filter(Boolean))].sort() };
     if (!exists(kpath)) { rows.push(Object.assign(row, { score: null, flagged: true, why: 'Keynote exported no picture for this slide' })); return; }
     if (!s.ref || !exists(join(base, s.ref))) { rows.push(Object.assign(row, { score: null, flagged: false, why: 'no source picture to compare with' })); return; }
+    row.source_resolution = imageSize(join(base, s.ref));
+    row.output_resolution = imageSize(kpath);
+    row.low_resolution = [row.source_resolution, row.output_resolution].some(sz => sz.w < W || sz.h < H);
     const ref = loadPixels(join(base, s.ref), W, H), key = loadPixels(kpath, W, H);
     const d = diffMap(blur(ref), blur(key)), st = stats(d);
     // side by side: source | Keynote | diff (red where they differ, the Keynote picture faded underneath)
@@ -82,7 +92,7 @@ function run(argv) {
   });
   let sheet = null;
   if (pairs.length) {
-    const tw = 320, th = 180, cols = Math.min(4, pairs.length), rws = Math.ceil(pairs.length / cols), SW = cols * (tw + 8), SH = rws * (2 * th + 30);
+    const tw = 320, th = Math.max(1, Math.round(tw * H / W)), cols = Math.min(4, pairs.length), rws = Math.ceil(pairs.length / cols), SW = cols * (tw + 8), SH = rws * (2 * th + 30);
     const img = new Uint8Array(SW * SH * 3).fill(255);
     pairs.forEach(([i, r, k], n) => {
       const x = (n % cols) * (tw + 8), y = Math.floor(n / cols) * (2 * th + 30);
@@ -93,6 +103,7 @@ function run(argv) {
   rows.sort((a, b) => (b.flagged - a.flagged) || ((b.worst || 0) - (a.worst || 0)));
   const fontsUsed = [...new Set(rows.flatMap(r => r.keynote_fonts))].sort();
   const report = { slides: rows.length, flagged: rows.filter(r => r.flagged).map(r => r.slide), threshold: flag,
+    comparison_resolution: { w: W, h: H }, low_resolution_slides: rows.filter(r => r.low_resolution).map(r => r.slide),
     fonts_keynote_used: fontsUsed, fonts_missing: fontsUsed.filter(f => !fontLoadable(f)), flagged_sheet: sheet, rows };
   writeJSON(join(out, 'report.json'), report);
   const summary = Object.assign({}, report); delete summary.rows;

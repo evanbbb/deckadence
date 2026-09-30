@@ -9,17 +9,18 @@
 //                                                                                  coordinates (fill and stroke geometry,
 //                                                                                  so arrowheads and stroke caps are exact)
 //   {k:'text', x,y,w,h,rot, ha, va, ar, segs:[{s, f, st, sz, c, o, u, link, lh, ls, cs, list}]}   ar = textAutoResize
-//   {k:'raster', id, x,y,w,h, why}                                                 export this node as a picture; x,y,w,h
+//   {k:'gradient', id, shape, x,y,w,h, paint}                                    editable linear-gradient candidate
+//   {k:'raster', id, x,y,w,h, why, source}                                       needs an editable reconstruction; x,y,w,h
 //                                                                                  = where its render lands (render bounds)
 //   {k:'raster', id, x,y,w,h, why, from:'ref'}                                     blend modes and blurs depend on what's
-//                                                                                  behind: cut this area out of the slide
-//                                                                                  picture instead (no download needed)
+//                                                                                  behind: an approved fallback may need a
+//                                                                                  source crop; disclose any baked-in text
 //   clip: [x,y,w,h] on any element = the visible area left by frames that clip their content
 // Nothing in the file is changed.
 const R = v => Math.round(v * 10) / 10;
 const hex = c => '#' + [c.r, c.g, c.b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase();
 const warnings = [];
-const MAX_PATH = 12000;   // characters of path data per element before we export it as a picture instead
+const MAX_PATH = 12000;   // above this, flag the vector for a separate editable reconstruction attempt
 
 function geom(node, frameT) {
   // node.absoluteTransform maps the node's own space to the page; express it relative to the frame
@@ -53,7 +54,8 @@ function renderBox(n, frameT) {
 }
 function raster(n, frameT, why, clip) {
   const fromRef = why.startsWith('ref:');
-  return { k: 'raster', id: n.id, ...(renderBox(n, frameT) || {}), why: fromRef ? why.slice(4) : why, ...(fromRef ? { from: 'ref' } : {}), ...(clip ? { clip } : {}) };
+  return { k: 'raster', id: n.id, ...(renderBox(n, frameT) || {}), why: fromRef ? why.slice(4) : why, ...(fromRef ? { from: 'ref' } : {}), ...(clip ? { clip } : {}),
+    source: { type: n.type, fills: n.fills === figma.mixed ? [] : n.fills, effects: n.effects || [] } };
 }
 function intersect(a, b) {
   if (!a) return b; if (!b) return a;
@@ -67,25 +69,34 @@ function needsRaster(n) {
   if ('blendMode' in n && !['NORMAL', 'PASS_THROUGH'].includes(n.blendMode)) return 'ref:blend mode ' + n.blendMode;
   for (const p of visiblePaints(n.fills)) if (p.blendMode && p.blendMode !== 'NORMAL') return 'ref:fill blend mode ' + p.blendMode;
   if ('effects' in n && n.effects.some(e => e.visible !== false && (e.type === 'LAYER_BLUR' || e.type === 'BACKGROUND_BLUR'))) return 'ref:blur';
+  const shadows = (n.effects || []).filter(e => e.visible !== false && e.type.includes('SHADOW'));
+  if (shadows.length > 1 || shadows.some(e => e.spread || (e.blendMode && e.blendMode !== 'NORMAL')) || (shadows.length && 'children' in n)) return 'complex shadow';
   if ('children' in n && n.children.some(ch => ch.isMask)) return 'mask';
   for (const p of visiblePaints(n.fills)) {
-    if (p.type.startsWith('GRADIENT')) return 'gradient';
+    if (p.type.startsWith('GRADIENT') && (p.type !== 'GRADIENT_LINEAR' || !['RECTANGLE', 'ELLIPSE', 'FRAME', 'COMPONENT', 'INSTANCE'].includes(n.type))) return 'gradient';
     if (p.type === 'IMAGE' && (p.scaleMode === 'TILE' || (p.rotation || 0) !== 0)) return 'image ' + p.scaleMode.toLowerCase();
     if (p.type === 'IMAGE' && p.filters && Object.values(p.filters).some(v => v)) return 'image filters';
     if (p.type === 'VIDEO') return 'video';
+    if (p.type === 'PATTERN' || p.type === 'SHADER') return p.type.toLowerCase();
   }
   for (const p of visiblePaints(n.strokes)) if (p.type !== 'SOLID') return 'non-solid stroke';
   return null;
 }
 
-async function walk(n, frameT, clip, out, opacity) {
+function shadowsOf(n) {
+  return (n.effects || []).filter(e => e.visible !== false && e.type.includes('SHADOW')).map(e => ({
+    type: e.type === 'INNER_SHADOW' ? 'inner' : 'outer', color: hex(e.color), opacity: e.color.a ?? 1,
+    blur: e.radius, x: e.offset.x, y: e.offset.y
+  }));
+}
+
+async function walkNode(n, frameT, clip, out, opacity) {
   if (!n.visible || ('opacity' in n && n.opacity < 0.001)) return;
   const op = opacity * ('opacity' in n ? n.opacity : 1);
   const g = geom(n, frameT);
   const why = needsRaster(n);
   if (why) { out.push(raster(n, frameT, why, clip)); return; }
   if (op < 0.999 && 'children' in n && n.children.length > 1) warnings.push(`${n.name}: group opacity ${R(op)} applied to each layer`);
-  if (n.effects && n.effects.some(e => e.visible !== false && e.type.includes('SHADOW'))) warnings.push(`${n.name} (${n.id}): shadow left out`);
 
   if (n.type === 'TEXT') {
     const segs = n.getStyledTextSegments(['fontName', 'fontSize', 'fills', 'textDecoration', 'hyperlink', 'lineHeight', 'letterSpacing', 'textCase', 'listOptions']);
@@ -125,6 +136,7 @@ async function walk(n, frameT, clip, out, opacity) {
     if (g.flip && fills.some(p => p.type === 'IMAGE')) { out.push(raster(n, frameT, 'mirrored image', clip)); return; }
     for (const p of fills) {
       if (p.type === 'SOLID') out.push({ k: 'box', shape, ...g, r, fill: hex(p.color), fo: R((p.opacity ?? 1) * op * 100) / 100, ...(clip ? { clip } : {}) });
+      else if (p.type === 'GRADIENT_LINEAR') out.push({ k: 'gradient', shape, ...g, r, paint: p, fo: op, ...(clip ? { clip } : {}) });
       else if (p.type === 'IMAGE') out.push({ k: 'img', ...g, r, shape, hash: p.imageHash, mode: p.scaleMode, xf: p.imageTransform, fo: R((p.opacity ?? 1) * op * 100) / 100, ...(clip ? { clip } : {}) });
     }
     if (strokes.length && sw > 0) {
@@ -141,27 +153,41 @@ async function walk(n, frameT, clip, out, opacity) {
   }
 }
 
+async function walk(n, frameT, clip, out, opacity) {
+  const start = out.length;
+  await walkNode(n, frameT, clip, out, opacity);
+  const shadows = shadowsOf(n);
+  // Child elements already carry their own ids. Preserve ids for review/rebuild decisions.
+  for (let i = start; i < out.length; i++) if (!out[i].id) {
+    out[i].id = n.id;
+    if (shadows.length && out[i].k !== 'raster') { out[i].shadows = shadows; out[i].render = renderBox(n, frameT); }
+  }
+}
+
 const frames = [];
 for (const id of FRAME_IDS) {
   const f = await figma.getNodeByIdAsync(id);
   if (!f || !('children' in f)) { warnings.push(id + ': not found or not a frame'); continue; }
   const els = [];
   const fills = visiblePaints(f.fills);
-  const bg = fills.length === 1 && fills[0].type === 'SOLID' && (fills[0].opacity ?? 1) > 0.99 ? hex(fills[0].color) : null;
+  const frameShadows = shadowsOf(f);
+  const bg = !frameShadows.length && fills.length === 1 && fills[0].type === 'SOLID' && (fills[0].opacity ?? 1) > 0.99 ? hex(fills[0].color) : null;
   // the frame's own fills (other than a plain background colour) become the bottom layers
   if (!bg) {
-    const why = fills.some(p => p.type.startsWith('GRADIENT') || p.type === 'VIDEO' || (p.type === 'IMAGE' && p.scaleMode === 'TILE')) ? 'gradient or pattern' : null;
+    const complexFrameShadow = frameShadows.length > 1 || (f.effects || []).some(e => e.visible !== false && e.type.includes('SHADOW') && (e.spread || (e.blendMode && e.blendMode !== 'NORMAL')));
+    const why = complexFrameShadow || fills.some(p => (p.type.startsWith('GRADIENT') && p.type !== 'GRADIENT_LINEAR') || p.type === 'VIDEO' || p.type === 'PATTERN' || p.type === 'SHADER' ||
+      (p.blendMode && p.blendMode !== 'NORMAL') || (p.type === 'IMAGE' && (p.scaleMode === 'TILE' || p.rotation || (p.filters && Object.values(p.filters).some(v => v))))) ? 'complex background' : null;
     if (why) {
-      // Keynote can't take a Figma gradient through the hand-over file: use its first colour, and say so
-      const gp = fills.find(p => p.gradientStops);
-      warnings.push(f.name + ' (' + f.id + '): background is a gradient or pattern; used a plain colour instead');
-      if (gp) els.push({ k: 'box', shape: 'rect', x: 0, y: 0, w: R(f.width), h: R(f.height), rot: 0, r: 0, fill: hex(gp.gradientStops[0].color), fo: 1 });
+      els.push({ k: 'raster', id: f.id, background: true, x: 0, y: 0, w: R(f.width), h: R(f.height), why,
+        source: { type: f.type, fills, effects: f.effects || [] } });
     }
     else for (const p of fills) {
-      if (p.type === 'SOLID') els.push({ k: 'box', shape: 'rect', x: 0, y: 0, w: R(f.width), h: R(f.height), rot: 0, r: 0, fill: hex(p.color), fo: p.opacity ?? 1 });
-      else if (p.type === 'IMAGE') els.push({ k: 'img', x: 0, y: 0, w: R(f.width), h: R(f.height), rot: 0, r: 0, hash: p.imageHash, mode: p.scaleMode, xf: p.imageTransform, fo: p.opacity ?? 1 });
+      if (p.type === 'SOLID') els.push({ k: 'box', id: f.id, background: true, shape: 'rect', x: 0, y: 0, w: R(f.width), h: R(f.height), rot: 0, r: 0, fill: hex(p.color), fo: p.opacity ?? 1 });
+      else if (p.type === 'GRADIENT_LINEAR') els.push({ k: 'gradient', id: f.id, background: true, shape: 'rect', x: 0, y: 0, w: R(f.width), h: R(f.height), paint: p });
+      else if (p.type === 'IMAGE') els.push({ k: 'img', id: f.id, background: true, x: 0, y: 0, w: R(f.width), h: R(f.height), rot: 0, r: 0, hash: p.imageHash, mode: p.scaleMode, xf: p.imageTransform, fo: p.opacity ?? 1 });
     }
   }
+  if (frameShadows.length && els.length && els[0].k !== 'raster') els[0].shadows = frameShadows;
   const clip = f.clipsContent ? [0, 0, R(f.width), R(f.height)] : null;
   for (const ch of f.children) await walk(ch, f.absoluteTransform, clip, els, 1);
   // keep results small (use_figma output is cut off around 20 kB): drop clips that are just the frame itself, and defaults

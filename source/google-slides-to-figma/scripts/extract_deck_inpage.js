@@ -7,19 +7,19 @@
 //   window.__EXTRACT_GET(i)       Promise<dataURL> for file i (pull files one by one, e.g. `browse js ... --out`)
 //   window.__EXTRACT_ZIP()        Promise<string> — triggers ONE download "<deck>-extract.zip" into the user's Downloads
 //   window.__EXTRACT_ZIP_DATAURL() Promise<dataURL> of the same ZIP (for tools that write a returned data URL to disk)
-// Options (set before running): window.__EXTRACT_OPTS = { download: true, renders: true, slides: [1,2,3] }
+// Options (set before running): window.__EXTRACT_OPTS = { download: true, renders: true, refWidth: 1920, slides: [1,2,3] }
 //   download: auto-download the ZIP when finished (default true — right for a user's own Chrome)
 //   slides:   1-based slide numbers to extract (default all)
 //
 // File layout (same inside the ZIP):
 //   deck.json                 {deckId, title, slideCount, youtube:[{id,url,obj,slide}], extractedAt}
 //   manifest.json             [{n, page, notes, background, youtube:[obj], images:[...], texts:[...], shapes:[...]}]
-//   ref/sNN.png               960x540 render of each slide (what it looks like in Slides)
+//   ref/sNN.png               vector export rendered at 1920px wide; PNG fallback is flagged if smaller
 //   media/sNN_K.<ext>         original image K of slide NN (png/jpg/gif/webp; up to 2048px long edge)
 // All rects are in 1920x1080 slide coordinates. images[].full = uncropped bounds, images[].vis = visible (cropped) area.
 (() => {
   if (window.__EXTRACT && window.__EXTRACT.status === 'running') return 'already running: ' + window.__EXTRACT.done + '/' + window.__EXTRACT.total;
-  const opts = Object.assign({ download: true, renders: true, slides: null }, window.__EXTRACT_OPTS || {});
+  const opts = Object.assign({ download: true, renders: true, refWidth: 1920, slides: null }, window.__EXTRACT_OPTS || {});
   const X = window.__EXTRACT = { status: 'running', done: 0, total: 0, files: [], warnings: [], error: null };
   const blobs = [];
   const add = (name, blob) => { blobs.push({ name, blob }); X.files.push({ name, size: blob.size }); };
@@ -28,6 +28,47 @@
   const title = document.title.replace(/ - Google (Slides|Präsentationen|Presentaciones).*$/, '').trim();
   const pad = n => String(n).padStart(2, '0');
   const extOf = t => ({ 'image/gif': 'gif', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' })[t] || 'bin';
+
+  async function referenceImage(pid, n) {
+    const width = Number(opts.refWidth);
+    if (!Number.isInteger(width) || width < 48 || width > 7680) throw new Error('refWidth must be an integer from 48 to 7680');
+    try {
+      const response = await fetch('/presentation/d/' + deckId + '/export/svg?pageid=' + encodeURIComponent(pid));
+      if (!response.ok) throw new Error('SVG export HTTP ' + response.status);
+      const doc = new DOMParser().parseFromString(await response.text(), 'image/svg+xml');
+      if (doc.querySelector('parsererror') || doc.documentElement.localName !== 'svg') throw new Error('invalid SVG export');
+      // Make referenced images self-contained before drawing, avoiding a tainted canvas.
+      for (const node of doc.querySelectorAll('image')) {
+        const href = node.getAttribute('href') || node.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+        if (href && !href.startsWith('data:') && !href.startsWith('#')) {
+          const r = await fetch(new URL(href, response.url));
+          if (!r.ok) throw new Error('SVG image HTTP ' + r.status);
+          const imageBlob = await r.blob();
+          const data = await new Promise((resolve, reject) => { const f = new FileReader(); f.onload = () => resolve(f.result); f.onerror = reject; f.readAsDataURL(imageBlob); });
+          node.setAttribute('href', data); node.setAttributeNS('http://www.w3.org/1999/xlink', 'href', data);
+        }
+      }
+      await document.fonts.ready;
+      const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(doc)], { type: 'image/svg+xml' }));
+      try {
+        const img = new Image();
+        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('SVG render failed')); img.src = url; });
+        const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = Math.round(width * img.naturalHeight / img.naturalWidth);
+        if (!canvas.height) throw new Error('SVG has no dimensions');
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        if (!blob) throw new Error('PNG encoding failed');
+        return blob;
+      } finally { URL.revokeObjectURL(url); }
+    } catch (e) {
+      X.warnings.push('render ' + n + ': high-resolution SVG unavailable (' + e.message + '); using PNG export');
+      const r = await fetch('/presentation/d/' + deckId + '/export/png?pageid=' + encodeURIComponent(pid));
+      if (!r.ok) throw new Error('PNG export HTTP ' + r.status);
+      const blob = await r.blob(), bitmap = await createImageBitmap(blob);
+      if (bitmap.width < width) X.warnings.push('render ' + n + ': source is only ' + bitmap.width + 'x' + bitmap.height + '; not upscaled');
+      bitmap.close(); return blob;
+    }
+  }
 
   // The filmstrip (slide list) only renders thumbnails near the viewport, so scroll it top to bottom collecting ids.
   async function pageIds() {
@@ -304,7 +345,7 @@
         const slide = await extractSlide(n, pid, pg);
         for (const v of yt) if (v.obj && pg.querySelector('[id="editor-' + v.obj + '"]')) { v.slide = n; slide.youtube.push(v.obj); }
         if (opts.renders) {
-          try { add('ref/s' + pad(n) + '.png', await (await fetch('/presentation/d/' + deckId + '/export/png?pageid=' + pid)).blob()); }
+          try { add('ref/s' + pad(n) + '.png', await referenceImage(pid, n)); }
           catch (e) { X.warnings.push('render ' + n + ': ' + e.message); }
         }
         manifest.push(slide);

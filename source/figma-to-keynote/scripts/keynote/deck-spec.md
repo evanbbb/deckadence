@@ -55,3 +55,9 @@ Rules:
 - `ref` is a picture of what the slide should look like (the source render). `compare.js` checks the Keynote
   result against it.
 - Anything else in an element is ignored, so a skill can keep its own notes (`"src": "…"`) there.
+
+Editable effect candidates:
+- `rect` and `ellipse` may set `gradient: {transform: [[a,c,tx],[b,d,ty]], stops: [{position, color: {r,g,b,a}}], opacity}` for a Figma linear gradient. Colour channels are 0–1. Solid `fill` is ignored when `gradient` is present. These are native DrawingML fills; check the target app’s import before treating them as accurate.
+- Shapes, paths, text and images may set `shadows: [{type: "outer" | "inner", color: "#000000", opacity: 0.25, blur: 8, x: 0, y: 4}]`. Distances are slide pixels. Multiple effects, group compositing and spread require a custom reconstruction or approved raster fallback; they are not guaranteed by this representation.
+- `sourceId` links rebuilt elements to source artwork for review. Figma background ids end in `:background`.
+- `compare.js` checks at 1920 pixels across by default (`--width` changes it), preserves the spec’s aspect ratio, and reports the actual input resolutions.

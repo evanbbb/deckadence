@@ -84,8 +84,9 @@ The exact steps depend on the converter. The assistant asks a few short question
 **What doesn't come across**
 - Speaker notes.
 - Links inside text (from Google Slides).
-- Figma shadows, prototype links and animations.
+- Figma prototype links and animations.
 - Charts and tables become simple shapes or pictures.
+- **Figma artwork:** the assistant attempts editable gradients, shadows and complex artwork, checks them, and asks before turning a failed reconstruction into a picture. Background pictures keep the slide’s text separate and editable.
 - **When converting to Figma:** GIFs need one drag from you to play. The assistant tells you which folder to drag in.
 
 **Where your files go:** Keynote files are saved on your Mac. Google Slides → Figma creates pages in your Figma file and uploads slide images there. While it works, your AI assistant can see slide content and sends what it needs to the company that makes it, as it does for any task you give it.
